@@ -258,6 +258,9 @@ function decorate(){
     if(!existing)row.prepend(b);
   }
 }
+// The profile card replaces the native identity/status presentation completely.
+// Keep the original nodes for SEELE's updates and restore them on MOD unload.
+ui.css(`#tela-sessao .painel-pessoas .pf-replaced>.pessoa-cabeca,#tela-sessao .painel-pessoas .pf-replaced>.pessoa-rodape{display:none}`);
 async function syncRoster(){
   const ids=people().map(p=>String(p.id));
   for(let i=0;i<ids.length;i+=32){

@@ -1,6 +1,6 @@
 # SEELE MOD PERFIS
 
-Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita usa os cartões do MOD no lugar da identidade visual nativa, sem dois cartões para a mesma pessoa. Clicar abre o perfil completo. Estado de voz, sinal, volume e acesso à moderação são preservados. Descarregar o MOD restaura a apresentação original; identidades ambíguas mantêm a linha nativa.
+Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita usa os cartões do MOD no lugar da identidade visual nativa, sem dois cartões para a mesma pessoa. Clicar abre o perfil completo. O número de sinal (como “100”) e as etiquetas nativas de estado (como “TRANSMITINDO”) ficam ocultos nas linhas substituídas. Volume e acesso à moderação permanecem disponíveis, sem alterar o funcionamento do áudio. Descarregar o MOD restaura a apresentação original; identidades ambíguas mantêm a linha nativa.
 
 Avatar e banner aceitam até **10 MiB cada** (10.485.760 bytes), com máximo de 4096 px por lado no seletor. PNG, JPEG, WebP e GIF são aceitos, sem reconversão que remova animação. Upload, armazenamento e download são divididos em partes; a imagem só é publicada após o upload completo. Os limites independem do ícone nativo do SEELE. Imagens legadas continuam legíveis.
 
@@ -8,7 +8,7 @@ Arquivos grandes demoram mais para transferir e consomem banda/disco do host. Um
 
 O PERFIS compartilha uma fila de até 8 pedidos/s entre uploads, downloads e consultas, abaixo dos 20 quadros/s sustentados do SEELE. Um upload de 10 MiB leva aproximadamente 5 minutos, ou mais em rede lenta. O orçamento do servidor é compartilhado com outros MODs e ações da sessão: essa margem não garante ausência de limitação sob tráfego concorrente arbitrário. Não há repetição automática de escritas após timeout. Transferência rápida de arquivos exige uma API de mídia própria no SEELE.
 
-Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.2, API 2, sem dependências de execução no cliente.
+Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.3, API 2, sem dependências de execução no cliente.
 
 ## Instalação
 
