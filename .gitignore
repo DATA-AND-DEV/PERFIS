@@ -1,0 +1,4 @@
+node_modules/
+*.db
+artifacts/
+ferramentas/quickjs-check/target/

@@ -1,0 +1,11 @@
+{
+  "name": "seele-mod-perfis",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "node ferramentas/build.mjs",
+    "test": "node --test test/*.test.cjs",
+    "check": "node --check cliente/main.js && node --check servidor/main.js",
+    "preview": "node ferramentas/preview.cjs"
+  }
+}

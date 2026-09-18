@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "seele/perfis",
+  "version": "1.0.0",
+  "api": 2,
+  "repo": "https://github.com/DATA-AND-DEV/PERFIS",
+  "reach": [
+    "dom",
+    "perfis por servidor",
+    "imagens e banners animados"
+  ],
+  "client": "cliente/main.js",
+  "server": "servidor/main.js"
+}
