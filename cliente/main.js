@@ -87,6 +87,8 @@ function interfaceMod(id,title,subtitle) {
 const ui=interfaceMod('seele/perfis','Perfis do servidor','Seu perfil aqui pode ser diferente em cada comunidade.');
 let profiles={},me='',editing=false,selected=null,editorRevision=0,draft=null;
 const images=new Map(),reduced=matchMedia('(prefers-reduced-motion: reduce)');
+const deferredImages=new Set(),CACHE_LIMIT=64*1024*1024;
+let cachedChars=0;
 let pauseMotion=false;
 const defaults={revision:0,displayName:'',pronouns:'',bio:'',status:'',accent:'#f2521f',effect:'none',avatar:null,banner:null};
 ui.css(`.seele-perfis .pf-card{border:1px solid #4e5974;border-radius:18px;overflow:hidden;background:#171d2c;position:relative;min-width:0}.seele-perfis .pf-banner{height:156px;background:linear-gradient(130deg,#624a9b,#17616b);position:relative;overflow:hidden}.seele-perfis .pf-banner img{width:100%;height:100%;object-fit:cover}.seele-perfis .pf-info{padding:0 22px 24px;position:relative;overflow-wrap:anywhere}.seele-perfis .pf-avatar{width:78px;height:78px;border-radius:50%;border:5px solid #171d2c;background:#3f365d;display:grid;place-items:center;font-size:28px;font-weight:700;object-fit:cover;margin-top:-39px;position:relative}.seele-perfis .pf-name{margin:12px 0 0;font-size:24px;color:#f4f2ff}.seele-perfis .pf-bio{white-space:pre-wrap;color:#d0d8ef}.seele-perfis .pf-directory{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:20px 0}.seele-perfis .pf-directory button{text-align:left;overflow-wrap:anywhere}.seele-perfis .pf-tag{font-size:12px;padding:4px 9px;border-radius:99px;background:#313a50;color:#e5eaff;display:inline-block}.seele-perfis .pf-tools{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:20px}`);
@@ -101,12 +103,15 @@ ui.css(`.seele-perfis .pf-card{border-color:var(--sm-line);border-radius:0;backg
 const people=()=>ui.snapshot?.presentes || [];
 const name=id=>{const p=people().find(p=>String(p.id)===id);return p?.nickname || p?.apelido || 'Pessoa '+id;};
 const motionOff=()=>reduced.matches || pauseMotion;
-async function getImage(id,slot,path){
+async function getImage(id,slot,path,background=false){
   if(!path)return null;
   if(images.has(path))return images.get(path);
+  if(background&&deferredImages.has(path))return null;
   const response=await ui.request({op:'asset',person:id,slot});
+  const expected=response.total||response.image?.length||0;
+  if(background&&cachedChars+expected>CACHE_LIMIT){deferredImages.add(path);return null;}
   if(response.paged){
-    const limit=4*Math.ceil((slot==='avatar'?512*1024:1024*1024)/3)+32;
+    const limit=4*Math.ceil(10*1024*1024/3)+32;
     if(response.path!==path||!Number.isInteger(response.total)||response.total>limit)throw new Error('Imagem recebida inválida.');
     while(response.image.length<response.total){
       const part=await ui.request({op:'asset',person:id,slot,path,offset:response.image.length});
@@ -116,7 +121,10 @@ async function getImage(id,slot,path){
     if(response.image.length!==response.total)throw new Error('Imagem recebida inválida.');
   }
   if(response.image && !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(response.image))throw new Error('Imagem recebida inválida.');
-  if(images.size>256)images.clear();images.set(path,response.image);return response.image;
+  while(images.size&&(cachedChars+(response.image?.length||0)>CACHE_LIMIT||images.size>=256)){
+    const first=images.keys().next().value;cachedChars-=images.get(first)?.length||0;images.delete(first);deferredImages.add(first);
+  }
+  deferredImages.delete(path);cachedChars+=response.image?.length||0;images.set(path,response.image);return response.image;
 }
 function card(profile,id){
   const p={...defaults,...profile},node=ui.el('article',undefined,'pf-card');node.dataset.effect=motionOff()?'none':p.effect;
@@ -174,8 +182,8 @@ function editor(){
     const f=ui.field(label,'file','',{accept:'image/png,image/jpeg,image/webp,image/gif'});
     f.input.onchange=()=>ui.run(async()=>{
       const file=f.input.files?.[0];if(!file)return;
-      const limit=slot==='avatar'?512*1024:1024*1024;
-      if(file.size>limit)throw new Error(slot==='avatar'?'Use um avatar de até 512 KiB.':'Use um banner de até 1 MiB.');
+      const limit=10*1024*1024;
+      if(file.size>limit)throw new Error('Use uma imagem de até 10 MiB.');
       if(!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type))throw new Error('Formato de imagem não suportado.');
       const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));reader.readAsDataURL(file);});
       await new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>image.width<=4096&&image.height<=4096?resolve():reject(new Error('A imagem deve ter no máximo 4096 px por lado.'));image.onerror=()=>reject(new Error('Imagem inválida.'));image.src=data;});
@@ -186,7 +194,7 @@ function editor(){
         ui.message('Enviando '+label.toLowerCase()+'… '+Math.min(100,Math.round((offset+6000)/data.length*100))+'%');
       }
       await load(me);draft[slot]=profiles[me][slot];editorRevision=result.revision;refreshPreview();ui.message(label+' publicado. Os textos continuam em edição até salvar.');
-    });form.append(f.wrap,ui.el('p',slot==='avatar'?'Avatar: até 512 KiB.':'Banner: até 1 MiB. GIF e WebP animados são preservados.','sm-note'));
+    });form.append(f.wrap,ui.el('p','Até 10 MiB e 4096 px por lado. GIF e WebP animados são preservados. Arquivos grandes levam mais tempo para enviar.','sm-note'));
     form.append(ui.button('Remover '+label.toLowerCase(),async()=>{const r=await ui.request({op:'clear-image',slot,revision:editorRevision});profiles[me]=r.profile;draft[slot]=null;editorRevision=r.profile.revision;refreshPreview();ui.message('Imagem removida.');}));
   }
   grid.append(form,preview);ui.body.append(grid);refreshPreview();
@@ -241,7 +249,7 @@ async function syncRoster(){
   decorate();
   if(!motionOff())for(const id of ids){
     const p=profiles[id];if(!p)continue;
-    await getImage(id,'avatar',p.avatar);await getImage(id,'banner',p.banner);
+    await getImage(id,'avatar',p.avatar,true);await getImage(id,'banner',p.banner,true);
   }
   decorate();
 }
@@ -249,7 +257,7 @@ async function syncRoster(){
 let scheduled=false;
 const observer=new MutationObserver(()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{scheduled=false;if(!ui.disposed)decorate();});});
 observer.observe(document.body,{childList:true,subtree:true});
-ui.disposers.push(()=>{observer.disconnect();document.querySelectorAll('.seele-perfis-roster,.pf-moderate').forEach(e=>e.remove());document.querySelectorAll('.pf-replaced').forEach(e=>e.classList.remove('pf-replaced'));images.clear();rosterNodes.clear();});
+ui.disposers.push(()=>{observer.disconnect();document.querySelectorAll('.seele-perfis-roster,.pf-moderate').forEach(e=>e.remove());document.querySelectorAll('.pf-replaced').forEach(e=>e.classList.remove('pf-replaced'));images.clear();deferredImages.clear();cachedChars=0;rosterNodes.clear();});
 const motionChanged=()=>{decorate();if(ui.dialog.open){if(editing)refreshPreview();else if(selected)show(selected);}};
 reduced.addEventListener('change',motionChanged);ui.disposers.push(()=>reduced.removeEventListener('change',motionChanged));
 ui.onPoll=async()=>{

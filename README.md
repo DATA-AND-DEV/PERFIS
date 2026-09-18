@@ -2,9 +2,11 @@
 
 Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita usa os cartões do MOD no lugar da identidade visual nativa, sem dois cartões para a mesma pessoa. Clicar abre o perfil completo. Estado de voz, sinal, volume e acesso à moderação são preservados. Descarregar o MOD restaura a apresentação original; identidades ambíguas mantêm a linha nativa.
 
-Avatar aceita até **512 KiB**; banner até **1 MiB**, com máximo de 4096 px por lado no seletor. PNG, JPEG, WebP e GIF são aceitos, sem reconversão que remova animação. Upload e download são divididos em partes; a imagem só é publicada após o upload completo. Os limites independem do ícone nativo do SEELE.
+Avatar e banner aceitam até **10 MiB cada** (10.485.760 bytes), com máximo de 4096 px por lado no seletor. PNG, JPEG, WebP e GIF são aceitos, sem reconversão que remova animação. Upload, armazenamento e download são divididos em partes; a imagem só é publicada após o upload completo. Os limites independem do ícone nativo do SEELE. Imagens legadas continuam legíveis.
 
-Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.1.0, API 2, sem dependências de execução no cliente.
+Arquivos grandes demoram mais para transferir e consomem banda/disco do host. Um arquivo de 10 MiB ocupa aproximadamente 13,4 MiB em base64. O cache de mídia tem orçamento de 64 Mi caracteres codificados; quando cheio, novas imagens da lista aguardam a abertura do perfil, que libera espaço das antigas. A remoção dos fragmentos de imagens substituídas é incremental, nos pedidos seguintes. Não houve aumento dos limites globais do SEELE.
+
+Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.0, API 2, sem dependências de execução no cliente.
 
 ## Instalação
 

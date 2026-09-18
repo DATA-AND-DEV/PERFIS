@@ -31,9 +31,9 @@ test('Perfis: rejeita opções inválidas sem modificar o perfil salvo',()=>{
   assert.equal(s.call({op:'view'}).profiles['1'].revision,0);
 });
 const gif='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-function upload(s,image=gif,ctx){
-  const start=s.call({op:'upload-start',slot:'banner',length:image.length},ctx);assert.equal(start.ok,true);
-  let result;for(let n=0,i=0;n<image.length;n+=6000,i++)result=s.call({op:'upload-part',token:start.token,index:i,part:image.slice(n,n+6000)},ctx);
+function upload(s,image=gif,ctx,slot='banner'){
+  const start=s.call({op:'upload-start',slot,length:image.length},ctx);assert.equal(start.ok,true);
+  let result;for(let n=0,i=0;n<image.length;n+=6000,i++){result=s.call({op:'upload-part',token:start.token,index:i,part:image.slice(n,n+6000)},ctx);if(!result.ok)break;}
   return result;
 }
 test('Perfis: banner GIF mantém bytes, fica público e resiste a runtime novo',()=>{
@@ -44,29 +44,57 @@ test('Perfis: banner GIF mantém bytes, fica público e resiste a runtime novo',
   assert.equal(s.call({op:'clear-image',slot:'banner',revision:1},member).profile.banner,null);
 });
 test('Perfis: limites, ordem de fragmentos, token de outro usuário e expiração',()=>{
-  const s=server('perfis');assert.equal(s.call({op:'upload-start',slot:'banner',length:4*Math.ceil(1048576/3)+33}).ok,false);
+  const s=server('perfis');assert.equal(s.call({op:'upload-start',slot:'banner',length:4*Math.ceil(10*1048576/3)+33}).ok,false);
   const start=s.call({op:'upload-start',slot:'banner',length:gif.length});
   const part={op:'upload-part',token:start.token,index:0,part:gif};
   assert.equal(s.call({...part,index:1}).ok,false);
   assert.equal(s.call(part,member).ok,false);
   s.advance(601);assert.equal(s.call(part).ok,false);
 });
-test('Perfis: banner de 1 MiB viaja em partes e não aceita limite do avatar',()=>{
+for(const slot of ['avatar','banner'])test('Perfis: '+slot+' de 10 MiB viaja sem arquivo ou resposta gigante',()=>{
   const s=server();
-  const binary=Buffer.alloc(1024*1024);binary.write('GIF89a');
+  const binary=Buffer.alloc(10*1024*1024);binary.write('GIF89a');
   const image='data:image/gif;base64,'+binary.toString('base64');
-  assert.equal(s.call({op:'upload-start',slot:'avatar',length:image.length}).ok,false);
-  assert.equal(upload(s,image,member).finished,true);
-  const first=s.call({op:'asset',person:'2',slot:'banner'});
+  assert.equal(upload(s,image,member,slot).finished,true);
+  assert.ok(Object.values(s.files).every(v=>v.length<=6000));
+  const first=s.call({op:'asset',person:'2',slot});
   assert.equal(first.paged,true);assert.ok(first.image.length<=65536);
   let received=first.image;
   while(received.length<first.total){
-    const p=s.call({op:'asset',person:'2',slot:'banner',path:first.path,offset:received.length});
+    const p=s.call({op:'asset',person:'2',slot,path:first.path,offset:received.length});
     assert.equal(p.ok,true);assert.ok(p.image.length<=65536);received+=p.image;
   }
   assert.equal(received,image);
-  assert.equal(s.call({op:'asset',person:'2',slot:'banner',path:'old',offset:0}).ok,false);
-  assert.equal(s.call({op:'asset',person:'2',slot:'banner',path:first.path,offset:-1}).ok,false);
+  assert.equal(s.call({op:'asset',person:'2',slot,path:'old',offset:0}).ok,false);
+  assert.equal(s.call({op:'asset',person:'2',slot,path:first.path,offset:-1}).ok,false);
+  assert.equal(s.call({op:'clear-image',slot,revision:1},member).ok,true);
+  for(let i=0;i<100;i++)s.call({op:'view'});
+  assert.equal(Object.keys(s.files).length,0,'limpeza incremental remove os fragmentos');
+});
+test('Perfis: imagens legadas continuam legíveis e são removidas após substituição',()=>{
+  const s=server();s.files['old.txt']=gif;
+  s.data.profiles=JSON.stringify({'1':{revision:1,avatar:'old.txt'}});
+  assert.equal(s.call({op:'asset',person:'1',slot:'avatar'}).image,gif);
+  assert.equal(upload(s,gif,undefined,'avatar').finished,true);
+  s.call({op:'view'});assert.equal(s.files['old.txt'],undefined);
+});
+test('Perfis: 10 MiB mais um byte não publica e nova tentativa limpa o upload abandonado',()=>{
+  const s=server();upload(s);
+  const original=s.call({op:'view'}).profiles['1'].banner;
+  const binary=Buffer.alloc(10*1024*1024+1);binary.write('GIF89a');
+  const image='data:image/gif;base64,'+binary.toString('base64');
+  assert.equal(upload(s,image).ok,false);
+  assert.equal(s.call({op:'view'}).profiles['1'].banner,original);
+  assert.equal(upload(s).finished,true);
+  for(let i=0;i<100;i++)s.call({op:'view'});
+  assert.equal(Object.keys(s.files).length,2,'só índice e fragmento da imagem publicada');
+});
+test('Perfis: padding no meio e upload incompleto não substituem imagem publicada',()=>{
+  const s=server();upload(s);
+  const original=s.call({op:'view'}).profiles['1'].banner;
+  const up=s.call({op:'upload-start',slot:'banner',length:7000});
+  assert.equal(s.call({op:'upload-part',token:up.token,index:0,part:gif+'A'.repeat(6000-gif.length-1)+'='}).ok,false);
+  assert.equal(s.call({op:'view'}).profiles['1'].banner,original);
 });
 test('Perfis: gravação falha não publica imagem e SVG não é aceito',()=>{
   const s=server('perfis');s.setFailWrite(true);assert.equal(upload(s).ok,false);

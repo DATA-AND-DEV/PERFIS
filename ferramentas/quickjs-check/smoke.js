@@ -16,11 +16,20 @@
     check(request({op:'clear-image',revision:2,slot:'banner'}));
     check(request({op:'view'}));
     // Exercise the largest encoded banner under the real 8 MiB heap limit.
-    const large='data:image/gif;base64,R0lGOD'+'A'.repeat(1398094)+'AA==';
-    const big=check(request({op:'upload-start',slot:'banner',length:large.length}));
-    for(let n=0,i=0;n<large.length;n+=6000,i++)check(request({op:'upload-part',token:big.token,index:i,part:large.slice(n,n+6000)}));
+    const prefix='data:image/gif;base64,R0lGOD',total='data:image/gif;base64,'.length+4*Math.ceil(10*1024*1024/3);
+    const big=check(request({op:'upload-start',slot:'banner',length:total}));
+    for(let n=0,i=0;n<total;n+=6000,i++){
+      const length=Math.min(6000,total-n);
+      let part=n===0?prefix+'A'.repeat(length-prefix.length):'A'.repeat(length);
+      if(n+length===total)part=part.slice(0,-2)+'==';
+      check(request({op:'upload-part',token:big.token,index:i,part}));
+    }
     const first=check(request({op:'asset',person:'1',slot:'banner'}));
     if(!first.paged||first.image.length>65536)throw Error('paginação');
+    for(let offset=first.image.length;offset<total;){
+      const part=check(request({op:'asset',person:'1',slot:'banner',path:first.path,offset}));
+      if(!part.image||part.image.length>65536)throw Error('fragmento');offset+=part.image.length;
+    }
   }
   return 'OK — runtime QuickJS, memória limitada a 8 MiB';
 })()
