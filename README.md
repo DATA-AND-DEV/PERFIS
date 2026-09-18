@@ -6,7 +6,9 @@ Avatar e banner aceitam até **10 MiB cada** (10.485.760 bytes), com máximo de 
 
 Arquivos grandes demoram mais para transferir e consomem banda/disco do host. Um arquivo de 10 MiB ocupa aproximadamente 13,4 MiB em base64. O cache de mídia tem orçamento de 64 Mi caracteres codificados; quando cheio, novas imagens da lista aguardam a abertura do perfil, que libera espaço das antigas. A remoção dos fragmentos de imagens substituídas é incremental, nos pedidos seguintes. Não houve aumento dos limites globais do SEELE.
 
-Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.0, API 2, sem dependências de execução no cliente.
+O PERFIS compartilha uma fila de até 8 pedidos/s entre uploads, downloads e consultas, abaixo dos 20 quadros/s sustentados do SEELE. Um upload de 10 MiB leva aproximadamente 5 minutos, ou mais em rede lenta. O orçamento do servidor é compartilhado com outros MODs e ações da sessão: essa margem não garante ausência de limitação sob tráfego concorrente arbitrário. Não há repetição automática de escritas após timeout. Transferência rápida de arquivos exige uma API de mídia própria no SEELE.
+
+Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.2, API 2, sem dependências de execução no cliente.
 
 ## Instalação
 

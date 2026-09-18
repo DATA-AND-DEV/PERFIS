@@ -41,9 +41,10 @@ function interfaceMod(id,title,subtitle) {
     wrap.append(input);return {wrap,input};
   };
   const button=(label,action,primary=false)=>{const b=el('button',label,primary?'sm-primary':'');b.type='button';b.onclick=()=>run(action);return b;};
+  const queuedRequest=filaDePedidos((target,payload)=>api.request(id,target,payload),()=>!disposed);
   async function request(payload) {
     if(disposed || channel===null) throw new Error('Entre em um servidor com um canal de texto.');
-    const response=await api.request(id,channel,payload);
+    const response=await queuedRequest(channel,payload);
     if(disposed) throw new Error('O MOD foi descarregado.');
     if(!response.ok) throw new Error(response.error || 'O servidor recusou a operação.');
     return response;

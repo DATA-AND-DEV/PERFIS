@@ -1,4 +1,4 @@
-/* SEELE Perfis 1.2.1 — identidade e permissão vêm exclusivamente do contexto. */
+/* SEELE Perfis 1.2.2 — identidade e permissão vêm exclusivamente do contexto. */
 (() => {
   'use strict';
   const LIMITS={avatar:10*1024*1024,banner:10*1024*1024}, CHUNK=6000, ASSET_PART=65536, MAX_PROFILES=128;

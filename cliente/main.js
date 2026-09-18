@@ -1,6 +1,23 @@
 /* Gerado por ferramentas/build.mjs. Sem dependências. */
 (()=>{
 "use strict";
+// All requests from this MOD share one budget, including reads and polling.
+// SEELE's control bucket allows 20/s; use at most 8/s, leaving headroom for
+// chat, telemetry and other MODs. Never retry writes automatically.
+function filaDePedidos(send,active,{now=()=>performance.now(),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
+  let tail=Promise.resolve(),next=0;
+  return (...args)=>{
+    const job=tail.then(async()=>{
+      if(!active())throw new Error('O MOD foi descarregado.');
+      while(now()<next){await wait(next-now());if(!active())throw new Error('O MOD foi descarregado.');}
+      next=now()+125;
+      return send(...args);
+    });
+    tail=job.catch(()=>{});
+    return job;
+  };
+}
+
 /* Shared at build time only. Each distributed MOD contains its own copy. */
 function interfaceMod(id,title,subtitle) {
   const api=globalThis.SeeleMods;
@@ -44,9 +61,10 @@ function interfaceMod(id,title,subtitle) {
     wrap.append(input);return {wrap,input};
   };
   const button=(label,action,primary=false)=>{const b=el('button',label,primary?'sm-primary':'');b.type='button';b.onclick=()=>run(action);return b;};
+  const queuedRequest=filaDePedidos((target,payload)=>api.request(id,target,payload),()=>!disposed);
   async function request(payload) {
     if(disposed || channel===null) throw new Error('Entre em um servidor com um canal de texto.');
-    const response=await api.request(id,channel,payload);
+    const response=await queuedRequest(channel,payload);
     if(disposed) throw new Error('O MOD foi descarregado.');
     if(!response.ok) throw new Error(response.error || 'O servidor recusou a operação.');
     return response;
@@ -194,7 +212,7 @@ function editor(){
         ui.message('Enviando '+label.toLowerCase()+'… '+Math.min(100,Math.round((offset+6000)/data.length*100))+'%');
       }
       await load(me);draft[slot]=profiles[me][slot];editorRevision=result.revision;refreshPreview();ui.message(label+' publicado. Os textos continuam em edição até salvar.');
-    });form.append(f.wrap,ui.el('p','Até 10 MiB e 4096 px por lado. GIF e WebP animados são preservados. Arquivos grandes levam mais tempo para enviar.','sm-note'));
+    });form.append(f.wrap,ui.el('p','Até 10 MiB e 4096 px por lado. GIF e WebP animados são preservados. O envio respeita o ritmo do SEELE: 10 MiB levam cerca de 5 minutos, ou mais em uma conexão lenta.','sm-note'));
     form.append(ui.button('Remover '+label.toLowerCase(),async()=>{const r=await ui.request({op:'clear-image',slot,revision:editorRevision});profiles[me]=r.profile;draft[slot]=null;editorRevision=r.profile.revision;refreshPreview();ui.message('Imagem removida.');}));
   }
   grid.append(form,preview);ui.body.append(grid);refreshPreview();

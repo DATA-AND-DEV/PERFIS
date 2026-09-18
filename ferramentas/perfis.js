@@ -108,7 +108,7 @@ function editor(){
         ui.message('Enviando '+label.toLowerCase()+'… '+Math.min(100,Math.round((offset+6000)/data.length*100))+'%');
       }
       await load(me);draft[slot]=profiles[me][slot];editorRevision=result.revision;refreshPreview();ui.message(label+' publicado. Os textos continuam em edição até salvar.');
-    });form.append(f.wrap,ui.el('p','Até 10 MiB e 4096 px por lado. GIF e WebP animados são preservados. Arquivos grandes levam mais tempo para enviar.','sm-note'));
+    });form.append(f.wrap,ui.el('p','Até 10 MiB e 4096 px por lado. GIF e WebP animados são preservados. O envio respeita o ritmo do SEELE: 10 MiB levam cerca de 5 minutos, ou mais em uma conexão lenta.','sm-note'));
     form.append(ui.button('Remover '+label.toLowerCase(),async()=>{const r=await ui.request({op:'clear-image',slot,revision:editorRevision});profiles[me]=r.profile;draft[slot]=null;editorRevision=r.profile.revision;refreshPreview();ui.message('Imagem removida.');}));
   }
   grid.append(form,preview);ui.body.append(grid);refreshPreview();
