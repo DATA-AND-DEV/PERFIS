@@ -44,12 +44,29 @@ test('Perfis: banner GIF mantém bytes, fica público e resiste a runtime novo',
   assert.equal(s.call({op:'clear-image',slot:'banner',revision:1},member).profile.banner,null);
 });
 test('Perfis: limites, ordem de fragmentos, token de outro usuário e expiração',()=>{
-  const s=server('perfis');assert.equal(s.call({op:'upload-start',slot:'banner',length:350001}).ok,false);
+  const s=server('perfis');assert.equal(s.call({op:'upload-start',slot:'banner',length:4*Math.ceil(1048576/3)+33}).ok,false);
   const start=s.call({op:'upload-start',slot:'banner',length:gif.length});
   const part={op:'upload-part',token:start.token,index:0,part:gif};
   assert.equal(s.call({...part,index:1}).ok,false);
   assert.equal(s.call(part,member).ok,false);
   s.advance(601);assert.equal(s.call(part).ok,false);
+});
+test('Perfis: banner de 1 MiB viaja em partes e não aceita limite do avatar',()=>{
+  const s=server();
+  const binary=Buffer.alloc(1024*1024);binary.write('GIF89a');
+  const image='data:image/gif;base64,'+binary.toString('base64');
+  assert.equal(s.call({op:'upload-start',slot:'avatar',length:image.length}).ok,false);
+  assert.equal(upload(s,image,member).finished,true);
+  const first=s.call({op:'asset',person:'2',slot:'banner'});
+  assert.equal(first.paged,true);assert.ok(first.image.length<=65536);
+  let received=first.image;
+  while(received.length<first.total){
+    const p=s.call({op:'asset',person:'2',slot:'banner',path:first.path,offset:received.length});
+    assert.equal(p.ok,true);assert.ok(p.image.length<=65536);received+=p.image;
+  }
+  assert.equal(received,image);
+  assert.equal(s.call({op:'asset',person:'2',slot:'banner',path:'old',offset:0}).ok,false);
+  assert.equal(s.call({op:'asset',person:'2',slot:'banner',path:first.path,offset:-1}).ok,false);
 });
 test('Perfis: gravação falha não publica imagem e SVG não é aceito',()=>{
   const s=server('perfis');s.setFailWrite(true);assert.equal(upload(s).ok,false);

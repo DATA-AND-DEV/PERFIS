@@ -1,7 +1,8 @@
-/* SEELE Perfis 1.0.0 — identidade e permissão vêm exclusivamente do contexto. */
+/* SEELE Perfis 1.1.0 — identidade e permissão vêm exclusivamente do contexto. */
 (() => {
   'use strict';
-  const MAX_IMAGE=350000, CHUNK=6000, MAX_PROFILES=128;
+  const LIMITS={avatar:512*1024,banner:1024*1024}, CHUNK=6000, ASSET_PART=65536, MAX_PROFILES=128;
+  const encodedLimit=slot=>4*Math.ceil(LIMITS[slot]/3)+32;
   const effects=['none','aurora','sparkle','pulse'];
   function fail(message) { throw new Error(message); }
   function text(value,max) { if (typeof value!=='string' || value.length>max) fail('Texto maior que o permitido.'); return value.trim(); }
@@ -43,7 +44,16 @@
         const id=person(r.person),slot=r.slot;
         if (!['avatar','banner'].includes(slot)) fail('Imagem inválida.');
         const path=store[id]?.[slot];
-        return JSON.stringify({ok:true,image:path ? arquivos.ler(path) : null});
+        const image=path ? arquivos.ler(path) : null;
+        if(r.offset!==undefined){
+          if(!Number.isInteger(r.offset)||r.offset<0||r.offset>(image?.length||0))fail('Posição de imagem inválida.');
+          if(r.path!==path)fail('A imagem mudou. Abra o perfil novamente.');
+          return JSON.stringify({ok:true,path,total:image?.length||0,image:image?.slice(r.offset,r.offset+ASSET_PART)||null});
+        }
+        // Small legacy assets retain their response shape; large assets require
+        // pagination rather than exceeding SEELE's maximum reply-part count.
+        if(image?.length>ASSET_PART)return JSON.stringify({ok:true,path,total:image.length,image:image.slice(0,ASSET_PART),paged:true});
+        return JSON.stringify({ok:true,image});
       }
       // A forged owner/admin in r is irrelevant. Only ctx.person can mutate.
       if (r.person!==undefined && r.person!==me) fail('Você só pode editar o próprio perfil.');
@@ -51,7 +61,7 @@
       if (!store[me] && Object.keys(store).length>=MAX_PROFILES) fail('Este servidor atingiu o limite de 128 perfis.');
       if (r.op==='upload-start') {
         if (!['avatar','banner'].includes(r.slot)) fail('Imagem inválida.');
-        if (!Number.isInteger(r.length) || r.length<1 || r.length>MAX_IMAGE) fail('Imagem muito grande: use um arquivo de até 256 KiB.');
+        if (!Number.isInteger(r.length) || r.length<1 || r.length>encodedLimit(r.slot)) fail('Imagem muito grande: avatar até 512 KiB; banner até 1 MiB.');
         const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
         const token=String(mundo.agora())+'-'+Math.random().toString(36).slice(2,14);
         const upload={token,path:'uploads/'+me+'-'+token+'.txt',slot:r.slot,total:r.length,length:0,next:0,started:mundo.agora()};
@@ -67,7 +77,12 @@
         if (prefix===null || prefix.length<up.length) fail('Não foi possível ler o upload.');
         const image=prefix.slice(0,up.length)+r.part;
         const finished=image.length===up.total;
-        if (finished && !validImage(image)) fail('Use PNG, JPEG, WebP ou GIF válido.');
+        if (finished) {
+          if(!validImage(image))fail('Use PNG, JPEG, WebP ou GIF válido.');
+          const base64=image.slice(image.indexOf(',')+1);
+          const bytes=base64.length/4*3-(base64.endsWith('==')?2:base64.endsWith('=')?1:0);
+          if(bytes>LIMITS[up.slot])fail('Imagem maior que o limite deste campo.');
+        }
         if (!arquivos.escrever(up.path,image)) fail('Falha ao gravar a imagem.');
         up.length=image.length; up.next++;
         if (finished) {

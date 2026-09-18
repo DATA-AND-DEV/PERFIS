@@ -15,6 +15,12 @@
     if(request({op:'asset',person:'1',slot:'banner'}).image!==image)throw Error('imagem');
     check(request({op:'clear-image',revision:2,slot:'banner'}));
     check(request({op:'view'}));
+    // Exercise the largest encoded banner under the real 8 MiB heap limit.
+    const large='data:image/gif;base64,R0lGOD'+'A'.repeat(1398094)+'AA==';
+    const big=check(request({op:'upload-start',slot:'banner',length:large.length}));
+    for(let n=0,i=0;n<large.length;n+=6000,i++)check(request({op:'upload-part',token:big.token,index:i,part:large.slice(n,n+6000)}));
+    const first=check(request({op:'asset',person:'1',slot:'banner'}));
+    if(!first.paged||first.image.length>65536)throw Error('paginação');
   }
   return 'OK — runtime QuickJS, memória limitada a 8 MiB';
 })()

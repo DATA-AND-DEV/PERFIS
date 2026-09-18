@@ -1,8 +1,10 @@
 # SEELE MOD PERFIS
 
-Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita mostra cartões compactos; clicar abre o perfil completo. A identidade e os controles nativos do SEELE são preservados.
+Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita usa os cartões do MOD no lugar da identidade visual nativa, sem dois cartões para a mesma pessoa. Clicar abre o perfil completo. Estado de voz, sinal, volume e acesso à moderação são preservados. Descarregar o MOD restaura a apresentação original; identidades ambíguas mantêm a linha nativa.
 
-Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.0.0, API 2, sem dependências de execução no cliente.
+Avatar aceita até **512 KiB**; banner até **1 MiB**, com máximo de 4096 px por lado no seletor. PNG, JPEG, WebP e GIF são aceitos, sem reconversão que remova animação. Upload e download são divididos em partes; a imagem só é publicada após o upload completo. Os limites independem do ícone nativo do SEELE.
+
+Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.1.0, API 2, sem dependências de execução no cliente.
 
 ## Instalação
 
@@ -14,6 +16,7 @@ Clone este repositório e escolha sua pasta raiz em Configurações → MODs →
 npm run build
 npm test
 npm run check
+npm run test:ui
 npm run preview
 cargo run --manifest-path ferramentas/quickjs-check/Cargo.toml
 ```

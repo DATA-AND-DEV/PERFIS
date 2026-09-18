@@ -105,6 +105,16 @@ async function getImage(id,slot,path){
   if(!path)return null;
   if(images.has(path))return images.get(path);
   const response=await ui.request({op:'asset',person:id,slot});
+  if(response.paged){
+    const limit=4*Math.ceil((slot==='avatar'?512*1024:1024*1024)/3)+32;
+    if(response.path!==path||!Number.isInteger(response.total)||response.total>limit)throw new Error('Imagem recebida inválida.');
+    while(response.image.length<response.total){
+      const part=await ui.request({op:'asset',person:id,slot,path,offset:response.image.length});
+      if(part.path!==path||part.total!==response.total||!part.image||part.image.length>65536)throw new Error('A imagem mudou. Abra o perfil novamente.');
+      response.image+=part.image;
+    }
+    if(response.image.length!==response.total)throw new Error('Imagem recebida inválida.');
+  }
   if(response.image && !/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(response.image))throw new Error('Imagem recebida inválida.');
   if(images.size>256)images.clear();images.set(path,response.image);return response.image;
 }
@@ -164,7 +174,8 @@ function editor(){
     const f=ui.field(label,'file','',{accept:'image/png,image/jpeg,image/webp,image/gif'});
     f.input.onchange=()=>ui.run(async()=>{
       const file=f.input.files?.[0];if(!file)return;
-      if(file.size>262144)throw new Error('Use uma imagem de até 256 KiB.');
+      const limit=slot==='avatar'?512*1024:1024*1024;
+      if(file.size>limit)throw new Error(slot==='avatar'?'Use um avatar de até 512 KiB.':'Use um banner de até 1 MiB.');
       if(!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type))throw new Error('Formato de imagem não suportado.');
       const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));reader.readAsDataURL(file);});
       await new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>image.width<=4096&&image.height<=4096?resolve():reject(new Error('A imagem deve ter no máximo 4096 px por lado.'));image.onerror=()=>reject(new Error('Imagem inválida.'));image.src=data;});
@@ -175,7 +186,7 @@ function editor(){
         ui.message('Enviando '+label.toLowerCase()+'… '+Math.min(100,Math.round((offset+6000)/data.length*100))+'%');
       }
       await load(me);draft[slot]=profiles[me][slot];editorRevision=result.revision;refreshPreview();ui.message(label+' publicado. Os textos continuam em edição até salvar.');
-    });form.append(f.wrap);
+    });form.append(f.wrap,ui.el('p',slot==='avatar'?'Avatar: até 512 KiB.':'Banner: até 1 MiB. GIF e WebP animados são preservados.','sm-note'));
     form.append(ui.button('Remover '+label.toLowerCase(),async()=>{const r=await ui.request({op:'clear-image',slot,revision:editorRevision});profiles[me]=r.profile;draft[slot]=null;editorRevision=r.profile.revision;refreshPreview();ui.message('Imagem removida.');}));
   }
   grid.append(form,preview);ui.body.append(grid);refreshPreview();
@@ -186,6 +197,9 @@ function editor(){
 }
 ui.css(`.seele-perfis-roster{display:block;width:100%;padding:0!important;text-align:left;overflow:hidden;border:1px solid var(--seele-linha-forte,#3a322a);background:var(--seele-negro-painel,#0a0806);color:var(--seele-osso,#eae3cf)}.seele-perfis-roster .pf-banner{height:56px;position:relative;overflow:hidden}.seele-perfis-roster .pf-banner img{width:100%;height:100%;object-fit:cover}.seele-perfis-roster .pf-mini-info{display:flex;align-items:center;gap:8px;padding:8px;position:relative}.seele-perfis-roster .pf-mini-avatar{width:40px;height:40px;flex:0 0 40px;object-fit:cover;display:grid;place-items:center;border:2px solid var(--seele-laranja-nerv);background:var(--seele-negro-painel);margin-top:-24px;font:700 20px var(--seele-display)}.seele-perfis-roster .pf-mini-copy{min-width:0;display:grid;gap:4px}.seele-perfis-roster .pf-mini-name{font:700 16px var(--seele-display);overflow-wrap:anywhere}.seele-perfis-roster .pf-mini-status{font:10px var(--seele-mono);text-transform:none;overflow-wrap:anywhere;color:var(--seele-rotulo-painel)}.seele-perfis-roster[data-effect=aurora] .pf-banner{animation:perfis-aurora 10s ease-in-out infinite}.seele-perfis-roster[data-effect=pulse] .pf-banner::after{content:'';position:absolute;inset:0;background:linear-gradient(30deg,#ffffff66,transparent);animation:perfis-pulse 5s ease-in-out infinite}.seele-perfis-roster[data-effect=sparkle] .pf-banner::after{content:'';position:absolute;inset:0;background-image:radial-gradient(#fff9 1px,transparent 2px);background-size:30px 30px;animation:perfis-sparkle 8s linear infinite}.seele-perfis-roster:focus-visible{outline:2px solid var(--seele-laranja-nerv);outline-offset:2px}`);
 const rosterNodes=new Map();
+// Replace the native visual identity, not its event handlers or live voice
+// state. Removing this class on unload immediately restores the original UI.
+ui.css(`#tela-sessao .painel-pessoas .pessoa.pf-replaced{display:flex;flex-direction:column;gap:8px;padding:8px;border:0;background:transparent}#tela-sessao .pf-replaced>.pessoa-cabeca .pessoa-identidade,#tela-sessao .pf-replaced>.barra{display:none}#tela-sessao .pf-replaced>.pessoa-cabeca{order:2}#tela-sessao .pf-replaced>.pessoa-rodape{order:3}#tela-sessao .pf-replaced>.volume{order:4}#tela-sessao .pf-replaced>.seele-perfis-roster{margin:0}#tela-sessao .pf-moderate{order:5;align-self:flex-start;border:1px solid var(--seele-linha-forte);background:transparent;color:var(--seele-osso);font:inherit;padding:4px 8px;cursor:pointer}`);
 function decorate(){
   const all=people();
   for(const [id,node] of rosterNodes)if(!all.some(p=>String(p.id)===id)){node.remove();rosterNodes.delete(id);}
@@ -193,7 +207,13 @@ function decorate(){
     const raw=row.querySelector('.pessoa-nome')?.textContent?.replace(/\s*\(você\)\s*$/,'').trim();
     const matching=all.filter(p=>(p.nickname || p.apelido)===raw);
     const existing=row.querySelector('.seele-perfis-roster');
-    if(matching.length!==1){existing?.remove();continue;}
+    if(matching.length!==1){existing?.remove();row.classList.remove('pf-replaced');row.querySelector('.pf-moderate')?.remove();continue;}
+    row.classList.add('pf-replaced');
+    const nativeModeration=row.querySelector('[data-moderar-pessoa]');
+    if(nativeModeration&&!row.querySelector('.pf-moderate')){
+      const moderate=ui.el('button','Moderar','pf-moderate');moderate.type='button';moderate.setAttribute('aria-label','Moderar '+raw);
+      moderate.onclick=()=>nativeModeration.click();row.append(moderate);
+    }
     const id=String(matching[0].id),p={...defaults,...profiles[id]};
     const key=JSON.stringify([id,p.revision,motionOff(),Boolean(images.get(p.avatar)),Boolean(images.get(p.banner))]);
     if(existing?.dataset.key===key)continue;
@@ -225,11 +245,11 @@ async function syncRoster(){
   }
   decorate();
 }
-// Native rosters are redrawn frequently. Debounce and never replace native controls.
+// Native rosters are redrawn frequently. Reapply the replacement presentation.
 let scheduled=false;
 const observer=new MutationObserver(()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{scheduled=false;if(!ui.disposed)decorate();});});
 observer.observe(document.body,{childList:true,subtree:true});
-ui.disposers.push(()=>{observer.disconnect();document.querySelectorAll('.seele-perfis-roster').forEach(e=>e.remove());images.clear();rosterNodes.clear();});
+ui.disposers.push(()=>{observer.disconnect();document.querySelectorAll('.seele-perfis-roster,.pf-moderate').forEach(e=>e.remove());document.querySelectorAll('.pf-replaced').forEach(e=>e.classList.remove('pf-replaced'));images.clear();rosterNodes.clear();});
 const motionChanged=()=>{decorate();if(ui.dialog.open){if(editing)refreshPreview();else if(selected)show(selected);}};
 reduced.addEventListener('change',motionChanged);ui.disposers.push(()=>reduced.removeEventListener('change',motionChanged));
 ui.onPoll=async()=>{
