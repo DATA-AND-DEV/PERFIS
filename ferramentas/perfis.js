@@ -170,6 +170,35 @@ async function enviarImagem(canal, slot, escolhido) {
   await SeeleUI.soltar(escolhido.id);
 }
 
+/**
+ * O que cada pessoa passa a ter **na lista do produto**, e não só aqui dentro.
+ *
+ * Pronome é a informação deste MOD que tem lugar natural lá: ela é sobre a
+ * pessoa, ela é curta, e quem a escreveu escreveu para ser vista — mostrá-la só
+ * dentro deste painel é mostrá-la longe de onde ela serve. O nome exibido
+ * **não** entra: a lista já escreve um nome, e dois nomes na mesma linha é a
+ * linha dizendo duas coisas.
+ *
+ * Quem não pôs pronome não ganha marca nenhuma. Um selo vazio ao lado de um
+ * nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
+ *
+ * A cor é a que a pessoa escolheu. O produto usa no contorno, e recusa o que
+ * não for `#rrggbb` — este MOD manda só o que já passa nessa forma, para que a
+ * recusa seja de quem digitou errado e não da lista inteira.
+ */
+const COR = /^#[0-9a-f]{6}$/i;
+function marcasDaLista() {
+  const marcas = {};
+  for (const id of ultimo.ids) {
+    const perfil = ultimo.perfis[id] ?? {};
+    const pronome = String(perfil.pronouns ?? '').trim();
+    if (!pronome) continue;
+    const cor = String(perfil.accent ?? '');
+    marcas[id] = COR.test(cor) ? { texto: pronome, cor } : { texto: pronome };
+  }
+  return marcas;
+}
+
 /** A lista: uma linha por pessoa, com o botão que abre a ficha dela. */
 function aLista() {
   if (!ultimo) return [texto('Consultando os perfis deste servidor…')];
@@ -244,9 +273,19 @@ iniciar(
       me = resposta.me ?? me;
     }
     ultimo = { ids, pessoas, perfis, me, canal };
+    // A recusa de uma marca não pode derrubar o painel: ele continua servindo
+    // mesmo quando a lista do produto não recebe nada.
+    try { await SeeleUI.marcas(marcasDaLista()); }
+    catch (erro) { console.warn('PERFIS: a lista recusou as marcas: ' + (erro.message || erro)); }
     return desenhoDoEstado();
   },
-  async () => { ultimo = null; aberto = null; },
+  async () => {
+    ultimo = null;
+    aberto = null;
+    // Fora de canal não há perfil de ninguém, e uma marca de antes seria uma
+    // afirmação sobre gente que este MOD não está mais vendo.
+    try { await SeeleUI.marcas({}); } catch { /* a sessão pode já ter saído */ }
+  },
   (evento, canal, repintar) => {
     if (!ultimo) return null;
     if (evento.nome === 'arquivo') {

@@ -112,7 +112,7 @@ test('Perfis: upload dividido preserva texto editado e valida revisão após ima
 test('Distribuição: manifestos e JavaScript válidos, pacote independente',()=>{
   for(const mod of ['perfis']){
     const dir=path.join(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'mod.json')));
-    assert.equal(manifest.api,2);assert.equal(manifest.id,'seele/'+mod);
+    assert.equal(manifest.api,3);assert.equal(manifest.id,'seele/'+mod);
     for(const reach of manifest.reach)assert.ok(Buffer.byteLength(reach,'utf8')<=32,'Cada alcance deve caber no limite do protocolo.');
     new vm.Script(fs.readFileSync(path.join(dir,manifest.client),'utf8'));
     new vm.Script(fs.readFileSync(path.join(dir,manifest.server),'utf8'));

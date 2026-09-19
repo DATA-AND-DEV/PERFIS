@@ -19,7 +19,7 @@ function world() {
   return { data, call };
 }
 function client(w, options = {}) {
-  const regions = [], themes = [], requests = [], timers = [], errors = [];
+  const regions = [], themes = [], requests = [], timers = [], errors = [], marcas = [], pedidasDeMarca = [];
   // Os arquivos que uma pessoa «escolheu», por número — o que o produto
   // guardaria. O MOD nunca os vê inteiros: ele pede pedaços.
   const escolhidos = new Map(), soltos = [];
@@ -51,12 +51,45 @@ function client(w, options = {}) {
         return bytes.subarray(inicio, inicio + 65535).toString('base64');
       },
       soltar: async arquivo => { escolhidos.delete(arquivo); soltos.push(arquivo); },
+      // A única superfície fora da região: um texto curto e uma cor por
+      // pessoa, e quem desenha é o produto. Os limites e as recusas aqui são
+      // os de `base.js` — um MOD que os estoure descobre **no teste dele**, e
+      // não numa lista que silenciosamente não mostra nada.
+      marcas: async pedidas => {
+        // **O que o MOD pediu**, antes de qualquer regra do produto.
+        //
+        // Guardado à parte porque as duas coisas se confundem com facilidade:
+        // o produto já joga fora uma marca de texto vazio, então um teste que
+        // olhasse só o resultado aprovaria um MOD que manda lixo e é salvo
+        // pela peneira do outro lado. A primeira reversão desta bateria provou
+        // exatamente isso.
+        pedidasDeMarca.length = 0;
+        pedidasDeMarca.push(structuredClone(pedidas ?? {}));
+        const entradas = Object.entries(pedidas ?? {});
+        if (entradas.length > 128) throw new Error('um MOD marca até 128 pessoas, e vieram ' + entradas.length);
+        const guardadas = {};
+        for (const [pessoa, marca] of entradas) {
+          const texto = String(marca?.texto ?? '').slice(0, 24);
+          if (!texto) continue;
+          const cor = marca?.cor;
+          if (cor !== undefined && (typeof cor !== 'string' || !/^#[0-9a-f]{6}$/i.test(cor))) {
+            throw new Error('a cor de uma marca precisa ser #rrggbb, e veio «' + cor + '»');
+          }
+          guardadas[String(pessoa)] = { texto, cor: cor ?? null };
+        }
+        marcas.length = 0;
+        marcas.push(guardadas);
+      },
     },
   });
   let listener = null;
   vm.runInContext(source, sandbox, { timeout: 1000 });
   return {
     regions, themes, requests, timers, errors, snapshot,
+    /** O que os MODs marcaram na lista de pessoas do produto, por último. */
+    marcas: () => marcas.at(-1) ?? {},
+    /** O que o MOD **pediu**, antes da regra do produto. */
+    marcasPedidas: () => pedidasDeMarca.at(-1) ?? {},
     tick: () => { assert.equal(timers.length, 1); timers.shift()(); },
     // O que a pessoa fez. Quem monta o elemento é o produto, então o teste
     // manda o **evento** dele, e não um clique num DOM que não existe aqui.
@@ -348,6 +381,123 @@ if (manifest.id === 'seele/mesa') {
     assert.ok(midia, 'o retrato não foi montado na ficha');
     assert.equal(midia.doServidor.pedido.op, 'portrait-asset');
   });
+  test('MESA: espaços de magia, preparar e conjurar gastam o espaço', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.call({ op: 'entry-save', name: 'Míssil', kind: 'magia', level: 1, published: true });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    const magia = w.call({ op: 'view' }, '1').campaign.entries.at(-1);
+    c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
+
+    // Os espaços são editáveis, nível a nível.
+    assert.ok(c.controles().has('s-0'), 'não há campo de espaços de nível 1');
+    c.fire({ nome: 'campo', chave: 's-0', valor: '2' }); await settle();
+    c.fire({ nome: 'botao', chave: 'magia-' + magia.id }); await settle();
+    c.fire({ nome: 'botao', chave: 'gravar-ficha' }); await settle(); await settle();
+
+    const salva = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    assert.equal(salva.slots[0].max, 2, 'os espaços não foram gravados');
+    assert.ok(salva.spells.includes(magia.id), 'a magia não foi preparada');
+
+    // Conjurar gasta um espaço, e o servidor é quem conta.
+    c.tick(); await settle();
+    c.fire({ nome: 'botao', chave: 'conjurar-' + magia.id }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).slots[0].used, 1);
+
+    // E o descanso longo devolve tudo.
+    c.fire({ nome: 'botao', chave: 'descansar' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).slots[0].used, 0);
+  });
+  test('MESA: ações com fórmula, usos e recuperação se criam, usam e saem', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
+
+    c.fire({ nome: 'campo', chave: 'ac-name', valor: 'Adaga' });
+    c.fire({ nome: 'campo', chave: 'ac-formula', valor: '1d4+2' });
+    c.fire({ nome: 'campo', chave: 'ac-max', valor: '2' });
+    c.fire({ nome: 'escolha', chave: 'ac-recharge', valor: 'long' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar-acao' }); await settle(); await settle();
+
+    const comAcao = w.call({ op: 'view' }, '1').campaign.sheets.at(-1).actions.at(-1);
+    assert.equal(comAcao.name, 'Adaga');
+    assert.equal(comAcao.formula, '1d4+2');
+    assert.equal(comAcao.max, 2);
+    assert.equal(comAcao.recharge, 'long');
+
+    c.tick(); await settle();
+    c.fire({ nome: 'botao', chave: 'usar-acao-' + comAcao.id }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).actions.at(-1).used, 1);
+
+    c.fire({ nome: 'botao', chave: 'tirar-acao-' + comAcao.id }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).actions.length, 0);
+  });
+  test('MESA: um verbete se edita e se publica', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    c.fire({ nome: 'campo', chave: 'v-name', valor: 'Poção' });
+    c.fire({ nome: 'campo', chave: 'v-level', valor: '2' });
+    c.fire({ nome: 'campo', chave: 'v-description', valor: 'Cura 2d4.' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar-verbete' }); await settle(); await settle();
+    const criado = w.call({ op: 'view' }, '1').campaign.entries.at(-1);
+    assert.equal(criado.name, 'Poção');
+    assert.equal(criado.level, 2);
+    assert.equal(criado.published, false, 'um verbete novo já nasceu publicado');
+
+    c.tick(); await settle();
+    c.fire({ nome: 'botao', chave: 'publicar-verbete-' + criado.id }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.entries.at(-1).published, true);
+
+    // E editar um já existente muda o mesmo verbete, sem criar outro.
+    c.tick(); await settle();
+    c.fire({ nome: 'botao', chave: 'editar-verbete-' + criado.id }); await settle();
+    assert.equal(c.controles().get('v-name').valor, 'Poção');
+    c.fire({ nome: 'campo', chave: 'v-name', valor: 'Poção maior' }); await settle();
+    c.fire({ nome: 'botao', chave: 'gravar-verbete' }); await settle(); await settle();
+    const entradas = w.call({ op: 'view' }, '1').campaign.entries;
+    assert.equal(entradas.length, 1, 'editar criou um verbete novo');
+    assert.equal(entradas[0].name, 'Poção maior');
+  });
+  test('MESA: a cena se ajusta — grade, descrição e notas do GM', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    const id = cena.campaign.scenes.at(-1).id;
+    w.call({ op: 'scene-show', id });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    assert.ok(c.controles().has('c-cols'), 'não há ajuste de grade');
+    c.fire({ nome: 'campo', chave: 'c-cols', valor: '30' });
+    c.fire({ nome: 'campo', chave: 'c-rows', valor: '20' });
+    c.fire({ nome: 'campo', chave: 'c-description', valor: 'Um salão longo.' });
+    c.fire({ nome: 'campo', chave: 'c-notes', valor: 'Alçapão em 4,4.' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar-cena' }); await settle(); await settle();
+
+    const salva = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id);
+    assert.equal(salva.cols, 30);
+    assert.equal(salva.rows, 20);
+    assert.equal(salva.description, 'Um salão longo.');
+    assert.equal(salva.notes, 'Alçapão em 4,4.');
+
+    // E o tabuleiro acompanha a grade nova.
+    c.tick(); await settle();
+    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    assert.equal(tela.largura, 30 * 26, 'o tabuleiro não acompanhou a grade');
+  });
   test('MESA: o tabuleiro é figura declarada, e arrastar uma peça a move no servidor', async () => {
     const w = world();
     assert.equal(w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' }).ok, true);
@@ -473,6 +623,56 @@ if (manifest.id === 'seele/perfis') {
     assert.ok(controles.has('effect'), 'a minha ficha não trouxe a escolha de efeito');
     assert.equal(JSON.stringify(w.data), before, 'abrir a ficha escreveu no servidor');
   });
+  test('PERFIS: o pronome de quem o escreveu aparece na lista do produto', async () => {
+    const w = world();
+    // Duas pessoas: uma escreveu pronome e cor, a outra não escreveu nada.
+    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    const c = client(w); await settle();
+
+    const marcas = c.marcas();
+    assert.deepEqual(marcas['2'], { texto: 'ela/dela', cor: '#a78bfa' }, 'o pronome não chegou à lista: ' + JSON.stringify(marcas));
+    // **Quem não escreveu pronome não ganha selo.** Um retângulo vazio ao lado
+    // de um nome é o produto anunciando uma ausência que ninguém pediu.
+    // E este MOD **não pede** marca para quem não pôs pronome. Olhar só o
+    // resultado não provaria nada: o produto já descarta texto vazio, e um MOD
+    // que mandasse um selo vazio para cada pessoa passaria escondido atrás
+    // dessa peneira.
+    assert.equal(c.marcasPedidas()['1'], undefined, 'o MOD pediu um selo para quem não pôs pronome');
+    assert.equal(marcas['1'], undefined, 'quem não pôs pronome ganhou uma marca vazia');
+    // E o nome exibido **não** vira marca: a lista já escreve um nome.
+    assert.ok(!JSON.stringify(marcas).includes('Lia'), 'o nome exibido virou selo e repetiu o nome da linha');
+  });
+
+  test('PERFIS: uma cor inválida no perfil não derruba a lista nem o painel', async () => {
+    const w = world();
+    // `roxo` não é `#rrggbb`. O produto recusaria o conjunto inteiro, e com
+    // ele o pronome de todo mundo — por isso este MOD manda só o que passa.
+    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'elu/delu', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    // E então a cor é trocada **por fora**, como só dados de outro tempo ou de
+    // outro servidor chegariam: este servidor recusa `roxo` na entrada.
+    const store = JSON.parse(w.data.profiles);
+    store['2'].accent = 'roxo';
+    w.data.profiles = JSON.stringify(store);
+    const c = client(w); await settle();
+    assert.deepEqual(c.marcas()['2'], { texto: 'elu/delu', cor: null }, 'a cor inválida levou o pronome junto: ' + JSON.stringify(c.marcas()));
+    assert.equal(c.errors.length, 0, 'a lista recusou: ' + c.errors.join(' | '));
+    // E o painel continua desenhado.
+    assert.match(content(c), /ID 2/);
+  });
+
+  test('PERFIS: sair do canal tira as marcas da lista', async () => {
+    const w = world();
+    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    const c = client(w); await settle();
+    assert.ok(c.marcas()['2'], 'o pronome não chegou à lista');
+    // Fora de canal não há perfil de ninguém: uma marca de antes seria uma
+    // afirmação sobre gente que este MOD não está mais vendo.
+    c.snapshot.open_channel = null;
+    c.snapshot.channels = [];
+    c.tick(); await settle();
+    assert.deepEqual(c.marcas(), {}, 'a marca sobreviveu à saída do canal: ' + JSON.stringify(c.marcas()));
+  });
+
   test('PERFIS: editar e gravar muda o perfil, e a recusa do servidor é dita', async () => {
     const w = world();
     const c = client(w); await settle();

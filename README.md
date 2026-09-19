@@ -1,39 +1,49 @@
-# SEELE MOD PERFIS
+# SEELE MOD PERFIS — 2.0.0
 
-Perfis por servidor com avatar, banner animado, efeitos, nome visual, pronomes, status e biografia. A coluna direita usa os cartões do MOD no lugar da identidade visual nativa, sem dois cartões para a mesma pessoa. Clicar abre o perfil completo. O número de sinal (como “100”) e as etiquetas nativas de estado (como “TRANSMITINDO”) ficam ocultos nas linhas substituídas. Volume e acesso à moderação permanecem disponíveis, sem alterar o funcionamento do áudio. Descarregar o MOD restaura a apresentação original; identidades ambíguas mantêm a linha nativa.
+Requer **API de MOD 3**. O cliente executa em Worker e declara sua apresentação ao SEELE. Esta é uma mudança incompatível de interface: a API 3 ainda oferece apenas regiões de leitura e quatro cores de tema.
 
-Avatar e banner aceitam até **10 MiB cada** (10.485.760 bytes), com máximo de 4096 px por lado no seletor. PNG, JPEG, WebP e GIF são aceitos, sem reconversão que remova animação. Upload, armazenamento e download são divididos em partes; a imagem só é publicada após o upload completo. Os limites independem do ícone nativo do SEELE. Imagens legadas continuam legíveis.
+PERFIS apresenta nome, identidade original e ID, pronomes, status e biografia das pessoas presentes, numa região própria. Os IDs vêm do snapshot; apelidos duplicados não são usados como identidade. Consultas são sequenciais, em lotes de até 32 pessoas, a cada 4 segundos após concluir o ciclo anterior.
 
-Arquivos grandes demoram mais para transferir e consomem banda/disco do host. Um arquivo de 10 MiB ocupa aproximadamente 13,4 MiB em base64. O cache de mídia tem orçamento de 64 Mi caracteres codificados; quando cheio, novas imagens da lista aguardam a abertura do perfil, que libera espaço das antigas. A remoção dos fragmentos de imagens substituídas é incremental, nos pedidos seguintes. Não houve aumento dos limites globais do SEELE.
+A API 3 atual **não permite editar o perfil, enviar imagens, exibir avatar/banner, aplicar efeitos ou substituir cartões na lista de pessoas**. Os perfis e arquivos salvos permanecem no servidor. O cliente não baixa imagens que não pode mostrar nem publica alterações automaticamente.
 
-O PERFIS compartilha uma fila de até 8 pedidos/s entre uploads, downloads e consultas, abaixo dos 20 quadros/s sustentados do SEELE. Um upload de 10 MiB leva aproximadamente 5 minutos, ou mais em rede lenta. O orçamento do servidor é compartilhado com outros MODs e ações da sessão: essa margem não garante ausência de limitação sob tráfego concorrente arbitrário. Não há repetição automática de escritas após timeout. Transferência rápida de arquivos exige uma API de mídia própria no SEELE.
+O servidor conserva autorização pelo dono, revisão, uploads fragmentados e seus limites de 10 MiB por avatar/banner. Esses handlers continuam testados, mas não há controles para acioná-los nesta versão. `ferramentas/fila.js` e seus testes preservam a fila histórica de upload; ela não integra mais o cliente de consulta.
 
-Repositório: [PERFIS](https://github.com/DATA-AND-DEV/PERFIS). Versão 1.2.3, API 2, sem dependências de execução no cliente.
+## Migração e dados existentes
 
-## Instalação
+Mantenha o ID `seele/perfis` e o armazenamento de dados do servidor. A metade de servidor e o formato dos dados não mudaram nesta migração. Não apague bancos, perfis, campanhas ou arquivos para trocar o pacote.
 
-Clone este repositório e escolha sua pasta raiz em Configurações → MODs → Instalar MOD de uma pasta. Ela contém mod.json, cliente/ e servidor/. No servidor hospedado, ligue o MOD e reconecte quando solicitado. Os participantes precisam do mesmo conteúdo instalado.
+A versão 2.0.0 declara `api: 3`; pacotes anteriores são recusados com `api-too-old`. O Worker não tem DOM, CSS, armazenamento da janela ou Tauri. Não existe listener `seele-mod-unload`: o produto encerra o Worker, temporizadores, região e tema na saída.
 
-## Desenvolvimento
+Recuperar interação, mídia ou decoração dos painéis exige uma extensão da API do SEELE. Não há compatibilidade escondida com a interface antiga.
+
+## Desenvolvimento e validação
 
 ```sh
+npm ci
 npm run build
-npm test
 npm run check
+npm test
+npx playwright install chromium
 npm run test:ui
 npm run preview
 cargo run --manifest-path ferramentas/quickjs-check/Cargo.toml
 ```
 
-Edite ferramentas/interface.js e ferramentas/perfis.js; o build gera cliente/main.js. O handler está em servidor/main.js. Prévia local: http://127.0.0.1:8795/ . A prévia usa identidades simuladas, handlers reais e armazenamento em memória; não é um servidor de produção.
+Edite `ferramentas/interface.js` e `ferramentas/perfis.js`; o build reproduz `cliente/main.js`, autocontido e sem dependências de execução. O handler está em `servidor/main.js`.
 
-## Padrão visual
+O laboratório usa um Worker real e extrai prelúdio, renderer e validação de tema do SEELE em `../SEELE/apps/seele-app/ui`. Para outro checkout, defina `SEELE_UI`. Ele oferece identidades simuladas e dados temporários, servido apenas em loopback; não é backend de produção. Use `MOD_PORT` para mudar a porta.
 
-Saira Condensed nos títulos, IBM Plex Mono nos dados, tokens SEELE, bordas retas e espaçamento de 8/16/24 px. Fontes e licenças usadas pela prévia ficam em ferramentas/native. A execução dentro do app usa as fontes e tokens do SEELE.
+Os testes cobrem o cliente final sem DOM, consultas sem sobreposição, falhas, troca de canal, preservação dos dados, regras e privacidade do servidor. O teste em Chromium usa o pacote de distribuição, Worker real e renderer do SEELE; verifica saída e reconexão. QuickJS exercita o motor de servidor. Isso não substitui homologação em duas janelas Tauri conectadas ao servidor nativo.
 
-## Documentação
+## Preparar o pacote
 
-- [Relatório de entrega e limites conhecidos](docs/relatorio-entrega.md)
-- [Migração dos diretórios](docs/migracao-diretorios.md)
+```sh
+npm run build
+npm run package -- /caminho/absoluto/novo/pacote
+```
 
-O relatório preserva o histórico de validação anterior à publicação, incluindo limitações da versão SEELE 0.11.0. A publicação do código não equivale à aprovação no catálogo de MODs. As cópias instaladas no aplicativo não são atualizadas por git push.
+O destino precisa ser novo. O pacote contém somente `mod.json`, `cliente/main.js` e `servidor/main.js`. Instale os mesmos bytes no host e nos clientes pelo fluxo de MODs do SEELE, habilite no servidor de teste e reconecte para conferir o novo conjunto. Não use a raiz Git com ferramentas e dependências como pacote.
+
+Antes da distribuição, valide instalação, hash, aceite, consulta, saída, reconexão e preservação de dados no SEELE nativo. Publicar uma nova versão requer avaliação do novo commit, atualização do catálogo e assinatura pelo indexador; mudar o código local não atualiza instalações existentes.
+
+Referência: [migração API 2 → 3](https://github.com/DATA-AND-DEV/SEELE/blob/fbcb09786c29219a18e20289381aa7d0e0ae13ac/docs/migracao-de-mods-api-2-para-3.md).
