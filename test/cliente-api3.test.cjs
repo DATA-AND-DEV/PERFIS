@@ -20,6 +20,9 @@ function world() {
 }
 function client(w, options = {}) {
   const regions = [], themes = [], requests = [], timers = [], errors = [];
+  // Os arquivos que uma pessoa «escolheu», por número — o que o produto
+  // guardaria. O MOD nunca os vê inteiros: ele pede pedaços.
+  const escolhidos = new Map(), soltos = [];
   const snapshot = { me: 2, open_channel: 1, channels: [{ id: 1 }], presentes: [{ id: 1, nickname: 'Alex' }, { id: 2, nickname: 'Lia' }] };
   const sandbox = vm.createContext({
     console: { error: e => errors.push(e) },
@@ -38,6 +41,16 @@ function client(w, options = {}) {
       // A API 3 completa: a janela fala com o MOD sem que ele tenha perguntado.
       // Um só ouvinte, e o último vence — é o que o produto oferece.
       aoEvento: fn => { listener = fn; },
+      // O arquivo que alguém escolheu: o MOD recebe um número e lê os bytes em
+      // pedaços. Aqui os bytes são de mentira, e o número é o índice deles.
+      pedaco: async (arquivo, inicio) => {
+        const bytes = escolhidos.get(arquivo);
+        if (!bytes) throw new Error('arquivo-nao-esta-de-pe');
+        // O mesmo tamanho do produto, e múltiplo de três: dois pedaços
+        // seguidos precisam concatenar no arquivo.
+        return bytes.subarray(inicio, inicio + 65535).toString('base64');
+      },
+      soltar: async arquivo => { escolhidos.delete(arquivo); soltos.push(arquivo); },
     },
   });
   let listener = null;
@@ -48,6 +61,14 @@ function client(w, options = {}) {
     // O que a pessoa fez. Quem monta o elemento é o produto, então o teste
     // manda o **evento** dele, e não um clique num DOM que não existe aqui.
     fire: evento => { assert.ok(listener, 'o MOD não registrou ouvinte de evento'); listener(evento); },
+    escolhidos, soltos,
+    /** Simula o que a pessoa escolheu no seletor do sistema. */
+    escolher: (chave, bytes, tipo = 'image/png') => {
+      const id = escolhidos.size + 1;
+      escolhidos.set(id, Buffer.from(bytes));
+      listener({ nome: 'arquivo', chave, arquivo: { id, tipo, papel: 'imagem', bytes: bytes.length } });
+      return id;
+    },
     // Os controles que estão na tela agora, pela chave — é o que permite a um
     // teste apertar «o botão de gravar» sem saber onde ele ficou.
     controles: () => {
@@ -72,6 +93,7 @@ const CHAVES_DA_FORMA = {
   campo: ['chave', 'rotulo', 'valor'],
   escolha: ['chave', 'rotulo', 'valor', 'opcoes'],
   botao: ['chave', 'dentro', 'desligado'],
+  arquivo: ['chave', 'dentro', 'desligado'],
   tela: ['chave', 'largura', 'altura', 'figuras', 'tracos'],
   midia: ['chave', 'fonte', 'doServidor', 'descricao', 'tocando'],
 };
@@ -121,6 +143,211 @@ test('resposta do canal anterior não é exibida após navegar', async () => {
   assert.match(content(c), /Canal alterado/);
 });
 if (manifest.id === 'seele/mesa') {
+  test('MESA: a mesa se cria daqui, e cena, ficha e peça também', async () => {
+    const w = world();
+    // Sem campanha: o único caminho é criar uma, e ele está na região.
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    // Quem cria a mesa é quem administra: o retrato precisa dizer que é ela,
+    // porque é esse nome que vai no `gm` do pedido.
+    await settle();
+    c.snapshot.me = 1;
+    c.tick(); await settle();
+    assert.ok(c.controles().has('criar-campanha'), 'não há como criar a mesa: ' + content(c));
+    assert.equal(c.controles().get('criar-campanha').desligado, true, 'CRIAR MESA começa ligado sem nome');
+
+    c.fire({ nome: 'campo', chave: 'nova-campanha', valor: 'A Casa' }); await settle();
+    assert.equal(c.controles().get('criar-campanha').desligado, false);
+    c.fire({ nome: 'botao', chave: 'criar-campanha' }); await settle(); await settle();
+    assert.ok(w.call({ op: 'view' }, '1').campaign, 'a mesa não foi criada: ' + content(c));
+    assert.equal(w.call({ op: 'view' }, '1').campaign.name, 'A Casa');
+    // O rascunho esvaziou: deixá-lo cheio repetiria o nome na criação seguinte.
+    assert.equal(c.controles().get('nova-cena').valor, '');
+
+    c.fire({ nome: 'campo', chave: 'nova-cena', valor: 'Salão' }); await settle();
+    c.fire({ nome: 'botao', chave: 'criar-cena' }); await settle(); await settle();
+    const comCena = w.call({ op: 'view' }, '1').campaign;
+    assert.equal(comCena.scenes.at(-1).name, 'Salão');
+
+    c.fire({ nome: 'escolha', chave: 'cena', valor: String(comCena.scenes.at(-1).id) });
+    await settle(); await settle();
+    c.fire({ nome: 'campo', chave: 'nova-peca', valor: 'Goblin' }); await settle();
+    c.fire({ nome: 'botao', chave: 'criar-peca' }); await settle(); await settle();
+    const comPeca = w.call({ op: 'view' }, '1').campaign.scenes.at(-1);
+    assert.equal(comPeca.tokens.at(-1).name, 'Goblin');
+
+    c.fire({ nome: 'campo', chave: 'nova-ficha', valor: 'Iria' }); await settle();
+    c.fire({ nome: 'botao', chave: 'criar-ficha' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).name, 'Iria');
+  });
+  test('MESA: a ficha aberta fere, cura, marca condição e entra na iniciativa', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+
+    c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
+    assert.ok(c.controles().has('ferir'), 'a ficha aberta não trouxe os controles de vida');
+
+    c.fire({ nome: 'campo', chave: 'dano', valor: '4' }); await settle();
+    c.fire({ nome: 'botao', chave: 'ferir' }); await settle(); await settle();
+    const ferida = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    assert.equal(ferida.hp, ficha.hp - 4, 'o dano não chegou ao servidor');
+
+    c.fire({ nome: 'botao', chave: 'curar' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).hp, ficha.hp);
+
+    c.fire({ nome: 'botao', chave: 'condicao-atordoado' }); await settle(); await settle();
+    assert.ok(
+      w.call({ op: 'view' }, '1').campaign.sheets.at(-1).conditions.includes('stunned'),
+      'a condição não foi marcada',
+    );
+    // E ela sai pelo mesmo botão: o rótulo diz qual dos dois ele faz agora.
+    c.fire({ nome: 'botao', chave: 'condicao-atordoado' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.sheets.at(-1).conditions.length, 0);
+
+    c.fire({ nome: 'botao', chave: 'iniciativa-add' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.initiative.at(-1).name, 'Iria');
+  });
+  test('MESA: o mapa escolhido chega inteiro ao servidor e é devolvido', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    const id = cena.campaign.scenes.at(-1).id;
+    w.call({ op: 'scene-show', id });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    // Maior que um fragmento e que um pedaço: é o que prova a junção.
+    const png = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'),
+      Buffer.alloc(70000, 3),
+    ]);
+    const arquivo = c.escolher('mapa', png);
+    for (let i = 0; i < 120; i++) await settle();
+
+    const guardada = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id);
+    assert.ok(guardada.asset, 'o mapa não foi publicado: ' + content(c));
+    const lido = w.call({ op: 'asset', scene: id }, '1');
+    const base64 = lido.image.slice(lido.image.indexOf(',') + 1);
+    assert.deepEqual(Buffer.from(base64, 'base64'), png, 'o mapa chegou diferente do que saiu');
+    assert.deepEqual(c.soltos, [arquivo], 'o arquivo escolhido não foi devolvido');
+  });
+  test('MESA: a ficha inteira se edita e grava, e o rascunho sobrevive à consulta', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
+
+    for (const chave of ['f-name', 'f-className', 'f-level', 'f-ac', 'a-str', 'f-inventory']) {
+      assert.ok(c.controles().has(chave), `a ficha não trouxe «${chave}»`);
+    }
+    c.fire({ nome: 'campo', chave: 'f-className', valor: 'Ladina' });
+    c.fire({ nome: 'campo', chave: 'f-level', valor: '3' });
+    c.fire({ nome: 'campo', chave: 'a-dex', valor: '17' });
+    c.fire({ nome: 'campo', chave: 'f-inventory', valor: 'Corda, gazua' });
+    await settle();
+
+    // O relógio bate no meio da edição, a cada dois segundos.
+    c.tick(); await settle();
+    assert.equal(c.controles().get('f-className').valor, 'Ladina', 'a consulta apagou a edição');
+
+    c.fire({ nome: 'botao', chave: 'gravar-ficha' }); await settle(); await settle();
+    const salva = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    assert.equal(salva.className, 'Ladina');
+    assert.equal(salva.level, 3);
+    assert.equal(salva.abilities.dex, 17);
+    assert.equal(salva.inventory, 'Corda, gazua');
+  });
+  test('MESA: pintar parede troca a casa, e não move a peça que está nela', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    const id = cena.campaign.scenes.at(-1).id;
+    w.call({ op: 'scene-show', id });
+    w.call({ op: 'token-add', scene: id, name: 'Chefe', x: 3, y: 3 });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    c.fire({ nome: 'botao', chave: 'modo-parede' }); await settle();
+    // Em cima da peça, de propósito: quem pinta parede quer pintar ali também.
+    c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: 26 * 3 + 5, y: 26 * 3 + 5, alvo: 'peca:token-2' });
+    await settle(); await settle();
+    const comParede = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id);
+    assert.deepEqual(comParede.walls, [{ x: 3, y: 3 }], 'a parede não foi pintada');
+    assert.equal(comParede.tokens[0].x, 3, 'a peça se moveu enquanto se pintava parede');
+
+    // O mesmo toque de novo tira a parede.
+    c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: 26 * 3 + 5, y: 26 * 3 + 5, alvo: null });
+    await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id).walls.length, 0);
+
+    // E sair do modo devolve o arraste.
+    c.fire({ nome: 'botao', chave: 'modo-parede' }); await settle();
+    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    const peca = tela.figuras.find(f => String(f.chave || '').startsWith('peca:'));
+    c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: peca.x, y: peca.y, alvo: peca.chave });
+    c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'terminou', x: 26 * 6, y: 26 * 6, alvo: peca.chave });
+    await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id).tokens[0].x, 6);
+  });
+  test('MESA: trilha da mesa e da cena, e verbete do compêndio', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    const id = cena.campaign.scenes.at(-1).id;
+    w.call({ op: 'scene-show', id });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    c.fire({ nome: 'escolha', chave: 'trilha-mesa', valor: 'battle' });
+    await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.music.preset, 'battle');
+
+    c.fire({ nome: 'escolha', chave: 'trilha', valor: 'mystery' });
+    await settle(); await settle();
+    assert.equal(
+      w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id).ambience,
+      'mystery',
+    );
+
+    c.fire({ nome: 'campo', chave: 'nova-entrada', valor: 'Poção de cura' }); await settle();
+    c.fire({ nome: 'botao', chave: 'criar-entrada' }); await settle(); await settle();
+    assert.equal(w.call({ op: 'view' }, '1').campaign.entries.at(-1).name, 'Poção de cura');
+  });
+  test('MESA: o retrato de uma ficha é enviado e aparece', async () => {
+    const w = world();
+    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
+
+    const png = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'),
+      Buffer.alloc(9000, 5),
+    ]);
+    const arquivo = c.escolher('retrato', png);
+    for (let i = 0; i < 60; i++) await settle();
+
+    const comRetrato = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
+    assert.ok(comRetrato.portrait, 'o retrato não foi publicado: ' + content(c));
+    const lido = w.call({ op: 'portrait-asset', sheet: ficha.id }, '1');
+    const base64 = lido.image.slice(lido.image.indexOf(',') + 1);
+    assert.deepEqual(Buffer.from(base64, 'base64'), png, 'o retrato chegou diferente');
+    assert.deepEqual(c.soltos, [arquivo], 'o arquivo escolhido não foi devolvido');
+
+    // E ele aparece na ficha, vindo do servidor deste MOD.
+    c.tick(); await settle();
+    const midia = [...c.controles().values()].find(n => n.forma === 'midia' && String(n.chave).startsWith('retrato:'));
+    assert.ok(midia, 'o retrato não foi montado na ficha');
+    assert.equal(midia.doServidor.pedido.op, 'portrait-asset');
+  });
   test('MESA: o tabuleiro é figura declarada, e arrastar uma peça a move no servidor', async () => {
     const w = world();
     assert.equal(w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' }).ok, true);
@@ -289,6 +516,59 @@ if (manifest.id === 'seele/perfis') {
     // quem conversa de buscar bytes na rede de um estranho.
     assert.doesNotMatch(content(c), /https?:/);
   });
+  test('PERFIS: a pessoa escolhe uma imagem e ela chega inteira ao servidor', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+
+    // Um PNG de verdade, maior que um fragmento e que um pedaço do produto:
+    // é o único jeito de provar que a junção dos pedaços não perde nada.
+    const png = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'),
+      Buffer.alloc(70000, 7),
+    ]);
+    const id = c.escolher('avatar', png);
+    for (let i = 0; i < 80; i++) await settle();
+
+    const perfil = w.call({ op: 'view', people: ['2'] }, '2').profiles['2'];
+    assert.ok(perfil.avatar, 'o retrato não foi publicado: ' + content(c));
+
+    // E os bytes que chegaram são os que saíram.
+    const lido = w.call({ op: 'asset', person: '2', slot: 'avatar' }, '2');
+    let uri = lido.image, proximo = lido.proximo;
+    while (proximo) {
+      const mais = w.call({ op: 'asset', person: '2', slot: 'avatar', ...proximo }, '2');
+      uri += mais.image; proximo = mais.proximo;
+    }
+    const base64 = uri.slice(uri.indexOf(',') + 1);
+    assert.deepEqual(Buffer.from(base64, 'base64'), png, 'a imagem chegou diferente do que saiu');
+
+    // **Devolvido na hora**, sem esperar a saída da sessão.
+    assert.deepEqual(c.soltos, [id], 'o arquivo escolhido não foi devolvido');
+  });
+  test('PERFIS: cancelar o seletor é uma resposta, e não silêncio', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    const antes = c.requests.length;
+    c.fire({ nome: 'arquivo', chave: 'avatar', arquivo: null });
+    await settle();
+    assert.equal(c.requests.length, antes, 'cancelar foi ao servidor');
+    assert.match(content(c), /nenhum arquivo escolhido/);
+  });
+  test('PERFIS: um som escolhido no lugar de uma imagem é recusado pelo nome', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    const id = c.escolhidos.size + 1;
+    c.escolhidos.set(id, Buffer.alloc(16));
+    c.fire({
+      nome: 'arquivo', chave: 'avatar',
+      arquivo: { id, tipo: 'audio/wav', papel: 'som', bytes: 16 },
+    });
+    for (let i = 0; i < 10; i++) await settle();
+    assert.match(content(c), /Escolha uma imagem/);
+  });
   test('PERFIS: consulta pessoas em lotes de no máximo 32', async () => {
     const c = client(world()); await settle();
     c.snapshot.presentes = Array.from({ length: 70 }, (_, i) => ({ id: i + 1, nickname: 'Mesmo nome' }));
@@ -298,7 +578,7 @@ if (manifest.id === 'seele/perfis') {
   });
 }
 if (manifest.id === 'seele/estilo') {
-  test('ESTILO: os seis tokens e a densidade, sem perder opções legadas; reset libera a camada', async () => {
+  test('ESTILO: os seis tokens, a densidade e a fonte; reset libera a camada', async () => {
     const w = world(), initial = w.call({ op: 'view' });
     assert.equal(w.call({ op: 'save', theme: initial.theme, revision: 0 }).ok, true);
     const before = JSON.stringify(w.data), c = client(w); await settle();
@@ -307,6 +587,7 @@ if (manifest.id === 'seele/estilo') {
       painel: initial.theme.panel, texto: initial.theme.text,
       apagado: initial.theme.muted, borda: initial.theme.border,
       densidade: initial.theme.density === 'comfortable' ? 'confortavel' : 'compacta',
+      fonte: initial.theme.font === 'sans' ? 'sans' : 'mono',
     });
     assert.equal(JSON.stringify(w.data), before);
     c.tick(); await settle(); assert.equal(c.themes.length, 1);
@@ -342,20 +623,24 @@ if (manifest.id === 'seele/estilo') {
     assert.equal(c.controles().get('accent').valor, '#6bffb6');
     assert.equal(c.controles().get('gravar').desligado, false, 'GRAVAR não ligou com a mudança');
 
-    // E a escolha de densidade entra no mesmo rascunho.
+    // E as escolhas entram no mesmo rascunho.
     c.fire({ nome: 'escolha', chave: 'density', valor: 'comfortable' });
+    c.fire({ nome: 'escolha', chave: 'font', valor: 'sans' });
     await settle();
     assert.equal(c.controles().get('density').valor, 'comfortable');
+    assert.equal(c.controles().get('font').valor, 'sans');
 
     c.fire({ nome: 'botao', chave: 'gravar' });
     await settle(); await settle();
     const gravado = w.call({ op: 'view' }).theme;
     assert.equal(gravado.accent, '#6bffb6');
     assert.equal(gravado.density, 'comfortable');
+    // **A fonte deixou de ser preservada-e-ignorada: ela é editada.**
+    assert.equal(gravado.font, 'sans');
+    assert.equal(c.themes.at(-1).fonte, 'sans');
     // **O que este MOD não edita foi de volta como veio.** Zerá-lo seria apagar
     // a escolha de outra pessoa por não saber mostrá-la.
     assert.equal(gravado.radius, inicial.theme.radius);
-    assert.equal(gravado.font, inicial.theme.font);
     assert.equal(gravado.glow, inicial.theme.glow);
     assert.equal(c.themes.at(-1).acento, '#6bffb6');
   });

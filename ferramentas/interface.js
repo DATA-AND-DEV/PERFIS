@@ -46,14 +46,32 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   // quadro.
   let canalAtual = null;
   let pintando = false;
+  let pendente = null;
 
+  /**
+   * Uma pintura de cada vez, e **nenhuma perdida**.
+   *
+   * Dois `regiao` em voo chegariam fora de ordem, e o desenho de trás apagaria
+   * o da frente — por isso a segunda espera. Mas a primeira versão **descartava**
+   * a segunda, e dois eventos seguidos (escolher a densidade e a fonte, no mesmo
+   * quadro) perdiam o desenho do segundo: a tela ficava mostrando a escolha
+   * anterior, e só o relógio a corrigia, quatro segundos depois.
+   *
+   * Guardar a última e pintá-la ao fim da que está em voo é o que resolve. É a
+   * mesma forma do aviso que chega durante uma colheita: o que não cabe agora
+   * não se joga fora, fica marcado.
+   */
   const desenhar = async partes => {
-    // Uma pintura de cada vez: dois `regiao` em voo chegariam fora de ordem, e
-    // o desenho de trás apagaria o da frente.
-    if (pintando) return;
+    if (pintando) { pendente = partes; return; }
     pintando = true;
     try {
-      await ui.regiao([cabecalho(titulo), ...partes]);
+      let atual = partes;
+      for (;;) {
+        pendente = null;
+        await ui.regiao([cabecalho(titulo), ...atual]);
+        if (!pendente) return;
+        atual = pendente;
+      }
     } finally {
       pintando = false;
     }

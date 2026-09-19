@@ -49,14 +49,32 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   // quadro.
   let canalAtual = null;
   let pintando = false;
+  let pendente = null;
 
+  /**
+   * Uma pintura de cada vez, e **nenhuma perdida**.
+   *
+   * Dois `regiao` em voo chegariam fora de ordem, e o desenho de trás apagaria
+   * o da frente — por isso a segunda espera. Mas a primeira versão **descartava**
+   * a segunda, e dois eventos seguidos (escolher a densidade e a fonte, no mesmo
+   * quadro) perdiam o desenho do segundo: a tela ficava mostrando a escolha
+   * anterior, e só o relógio a corrigia, quatro segundos depois.
+   *
+   * Guardar a última e pintá-la ao fim da que está em voo é o que resolve. É a
+   * mesma forma do aviso que chega durante uma colheita: o que não cabe agora
+   * não se joga fora, fica marcado.
+   */
   const desenhar = async partes => {
-    // Uma pintura de cada vez: dois `regiao` em voo chegariam fora de ordem, e
-    // o desenho de trás apagaria o da frente.
-    if (pintando) return;
+    if (pintando) { pendente = partes; return; }
     pintando = true;
     try {
-      await ui.regiao([cabecalho(titulo), ...partes]);
+      let atual = partes;
+      for (;;) {
+        pendente = null;
+        await ui.regiao([cabecalho(titulo), ...atual]);
+        if (!pendente) return;
+        atual = pendente;
+      }
     } finally {
       pintando = false;
     }
@@ -120,10 +138,10 @@ function interfaceMod(id, titulo, intervalo = 4000) {
 // a ficha se edita, e o retrato e a faixa aparecem: o produto busca os bytes na
 // metade de servidor deste MOD, reconhece o formato e monta a imagem.
 //
-// O que continua fora está na emenda de 19/09 do ADR 0049: **escolher um
-// arquivo do disco** é um caminho que nenhum cliente do SEELE abre por conta de
-// terceiro. As imagens já enviadas aparecem e podem ser removidas; enviar uma
-// nova espera o seletor ser do produto. Está escrito lá, com a razão.
+// Enviar uma imagem nova voltou junto: a pessoa aperta, o seletor é do
+// sistema, e este MOD recebe um **identificador** — não um caminho. Os bytes
+// saem do produto em pedaços e entram no servidor pelo protocolo que ele já
+// tinha, `upload-start` e `upload-part`.
 
 const { texto, cabecalho, campo, escolha, botao, linha, request, iniciar } =
   interfaceMod('seele/perfis', 'PERFIS');
@@ -142,6 +160,9 @@ const EFEITOS = [
   { valor: 'sparkle', dentro: 'BRILHO' },
   { valor: 'pulse', dentro: 'PULSO' },
 ];
+
+/** Quanto cabe num fragmento deste servidor. Ele recusa acima disso. */
+const FRAGMENTO = 6000;
 
 /** O último retrato da rede, e o que está sendo editado por cima dele. */
 let ultimo = null;
@@ -222,8 +243,64 @@ function minhaFicha() {
       botao('tirar-banner', 'TIRAR FAIXA', !meuPerfil().banner),
     ]));
   }
+  // **Escolher é ato de quem usa.** O botão abre o seletor do sistema; o que
+  // volta é um identificador e o que o produto provou sobre os bytes.
+  partes.push(linha([
+    { forma: 'arquivo', chave: 'avatar', dentro: 'ENVIAR RETRATO' },
+    { forma: 'arquivo', chave: 'banner', dentro: 'ENVIAR FAIXA' },
+  ]));
   partes.push(texto(aviso || 'Revisão ' + (meuPerfil().revision ?? 0)));
   return partes;
+}
+
+/**
+ * Manda ao servidor o arquivo que alguém escolheu, em fragmentos.
+ *
+ * Os bytes nunca estão inteiros aqui: o produto os entrega em pedaços, e cada
+ * pedaço é recortado no tamanho que este servidor aceita. O primeiro fragmento
+ * carrega o prefixo `data:` porque é isso que o servidor confere para saber que
+ * recebeu uma imagem, e não um texto qualquer.
+ */
+async function enviarImagem(canal, slot, escolhido) {
+  if (escolhido.papel !== 'imagem') throw new Error('Escolha uma imagem.');
+  const prefixo = 'data:' + escolhido.tipo + ';base64,';
+  // O tamanho anunciado é o da cadeia inteira, prefixo incluído: é o que o
+  // servidor compara ao somar os fragmentos.
+  const total = prefixo.length + Math.ceil(escolhido.bytes / 3) * 4;
+  const inicio = await request(canal, { op: 'upload-start', slot, length: total });
+
+  let sobra = prefixo;
+  let lidos = 0;
+  let indice = 0;
+  let enviado = 0;
+  for (;;) {
+    if (sobra.length < FRAGMENTO && lidos < escolhido.bytes) {
+      const pedaco = await SeeleUI.pedaco(escolhido.id, lidos);
+      if (!pedaco) throw new Error('O arquivo acabou antes do esperado.');
+      // Quatro caracteres por três bytes: é assim que se sabe quanto do
+      // arquivo o pedaço cobriu, sem ter os bytes na mão.
+      lidos += (pedaco.length / 4) * 3;
+      sobra += pedaco;
+      continue;
+    }
+    if (!sobra.length) break;
+    // O último fragmento é o único que pode ser menor: o servidor recusa um
+    // fragmento curto no meio, porque um curto no meio é um upload truncado.
+    const parte = sobra.slice(0, FRAGMENTO);
+    sobra = sobra.slice(parte.length);
+    enviado += parte.length;
+    if (parte.length < FRAGMENTO && enviado !== total) {
+      throw new Error('O arquivo mudou no meio do envio.');
+    }
+    const resposta = await request(canal, {
+      op: 'upload-part', slot, token: inicio.token, index: indice, part: parte,
+    });
+    indice += 1;
+    if (resposta.finished) break;
+  }
+  // **Devolvido na hora.** Dez megabytes presos até a saída da sessão seriam
+  // dez megabytes que ninguém mais vai ler.
+  await SeeleUI.soltar(escolhido.id);
 }
 
 /** A lista: uma linha por pessoa, com o botão que abre a ficha dela. */
@@ -305,6 +382,26 @@ iniciar(
   async () => { ultimo = null; aberto = null; },
   (evento, canal, repintar) => {
     if (!ultimo) return null;
+    if (evento.nome === 'arquivo') {
+      // Cancelar é uma resposta: `null` quer dizer que o seletor foi fechado.
+      if (!evento.arquivo) {
+        aviso = evento.porque ?? 'nenhum arquivo escolhido';
+        repintar(desenhoDoEstado());
+        return null;
+      }
+      if (canal === null) return null;
+      aviso = 'enviando…';
+      repintar(desenhoDoEstado());
+      return enviarImagem(canal, evento.chave, evento.arquivo).then(
+        async () => {
+          const visto = await request(canal, { op: 'view', people: [String(ultimo.me)] });
+          Object.assign(ultimo.perfis, visto.profiles);
+          aviso = 'enviada';
+          repintar(desenhoDoEstado());
+        },
+        erro => { aviso = erro.message || String(erro); repintar(desenhoDoEstado()); },
+      );
+    }
     if (evento.nome === 'campo' || evento.nome === 'escolha') {
       rascunho = { ...(rascunho ?? meuPerfil()) };
       rascunho[evento.chave] = evento.valor;
