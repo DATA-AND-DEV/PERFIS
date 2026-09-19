@@ -304,32 +304,55 @@ async function enviarImagem(canal, slot, escolhido) {
 }
 
 /**
- * O que cada pessoa passa a ter **na lista do produto**, e não só aqui dentro.
+ * O cartão que cada pessoa passa a ter **na lista do produto**.
  *
- * Pronome é a informação deste MOD que tem lugar natural lá: ela é sobre a
- * pessoa, ela é curta, e quem a escreveu escreveu para ser vista — mostrá-la só
- * dentro deste painel é mostrá-la longe de onde ela serve. O nome exibido
- * **não** entra: a lista já escreve um nome, e dois nomes na mesma linha é a
- * linha dizendo duas coisas.
+ * O retrato e o nome que alguém escolheu são sobre aquela pessoa; mostrá-los só
+ * dentro deste painel é mostrá-los longe de onde significam alguma coisa.
  *
- * Quem não pôs pronome não ganha marca nenhuma. Um selo vazio ao lado de um
- * nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
+ * O que chega ao produto é **declaração**, na mesma gramática da região — e é o
+ * renderer dele que monta, com a tipografia dele e o tamanho dele. Este MOD não
+ * escolhe posição, não escolhe medida e não alcança nó nenhum. A gramática do
+ * cartão é menor que a da região: nada que receba foco ou clique, porque a
+ * linha do roster já tem um botão do produto.
  *
- * A cor é a que a pessoa escolheu. O produto usa no contorno, e recusa o que
- * não for `#rrggbb` — este MOD manda só o que já passa nessa forma, para que a
- * recusa seja de quem digitou errado e não da lista inteira.
+ * O que entra é o que a pessoa escreveu para ser visto: o retrato, o nome
+ * exibido quando ele difere do apelido, o pronome e o status. Quem não escreveu
+ * nada não ganha cartão — uma moldura vazia ao lado de um nome é o produto
+ * anunciando uma ausência que ninguém pediu para anunciar.
  */
-const COR = /^#[0-9a-f]{6}$/i;
-function marcasDaLista() {
-  const marcas = {};
+function cartoesDaLista() {
+  const cartoes = {};
   for (const id of ultimo.ids) {
     const perfil = ultimo.perfis[id] ?? {};
+    const pessoa = ultimo.pessoas.find(p => String(p.id) === id);
+    const apelido = pessoa?.nickname || pessoa?.apelido || '';
+    const partes = [];
+
+    // O retrato vem do **servidor deste MOD**, e nunca de um endereço: é a
+    // mesma origem da ficha, e o produto decide o tamanho.
+    if (perfil.avatar) {
+      partes.push({
+        forma: 'midia',
+        chave: 'retrato',
+        descricao: 'retrato de ' + (apelido || 'quem está aqui'),
+        doServidor: { canal: ultimo.canal, pedido: { op: 'asset', person: id, slot: 'avatar' }, campo: 'image' },
+      });
+    }
+
+    // O nome exibido só entra quando **difere** do apelido: repeti-lo seria a
+    // linha dizendo duas vezes a mesma coisa.
+    const exibido = String(perfil.displayName ?? '').trim();
+    if (exibido && exibido !== apelido) partes.push({ forma: 'titulo', chave: 'nome', dentro: exibido });
+
     const pronome = String(perfil.pronouns ?? '').trim();
-    if (!pronome) continue;
-    const cor = String(perfil.accent ?? '');
-    marcas[id] = COR.test(cor) ? { texto: pronome, cor } : { texto: pronome };
+    if (pronome) partes.push({ forma: 'texto', chave: 'pronome', dentro: pronome });
+
+    const status = String(perfil.status ?? '').trim();
+    if (status) partes.push({ forma: 'texto', chave: 'status', dentro: status });
+
+    if (partes.length) cartoes[id] = partes;
   }
-  return marcas;
+  return cartoes;
 }
 
 /** A lista: uma linha por pessoa, com o botão que abre a ficha dela. */
@@ -406,18 +429,18 @@ iniciar(
       me = resposta.me ?? me;
     }
     ultimo = { ids, pessoas, perfis, me, canal };
-    // A recusa de uma marca não pode derrubar o painel: ele continua servindo
+    // A recusa de um cartão não pode derrubar o painel: ele continua servindo
     // mesmo quando a lista do produto não recebe nada.
-    try { await SeeleUI.marcas(marcasDaLista()); }
-    catch (erro) { console.warn('PERFIS: a lista recusou as marcas: ' + (erro.message || erro)); }
+    try { await SeeleUI.cartoes(cartoesDaLista()); }
+    catch (erro) { console.warn('PERFIS: a lista recusou os cartões: ' + (erro.message || erro)); }
     return desenhoDoEstado();
   },
   async () => {
     ultimo = null;
     aberto = null;
-    // Fora de canal não há perfil de ninguém, e uma marca de antes seria uma
+    // Fora de canal não há perfil de ninguém, e um cartão de antes seria uma
     // afirmação sobre gente que este MOD não está mais vendo.
-    try { await SeeleUI.marcas({}); } catch { /* a sessão pode já ter saído */ }
+    try { await SeeleUI.cartoes({}); } catch { /* a sessão pode já ter saído */ }
   },
   (evento, canal, repintar) => {
     if (!ultimo) return null;

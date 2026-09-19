@@ -19,7 +19,7 @@ function world() {
   return { data, call };
 }
 function client(w, options = {}) {
-  const regions = [], themes = [], requests = [], timers = [], errors = [], marcas = [], pedidasDeMarca = [];
+  const regions = [], themes = [], requests = [], timers = [], errors = [], cartoes = [], pedidosDeCartao = [];
   // Os arquivos que uma pessoa «escolheu», por número — o que o produto
   // guardaria. O MOD nunca os vê inteiros: ele pede pedaços.
   const escolhidos = new Map(), soltos = [];
@@ -51,34 +51,36 @@ function client(w, options = {}) {
         return bytes.subarray(inicio, inicio + 65535).toString('base64');
       },
       soltar: async arquivo => { escolhidos.delete(arquivo); soltos.push(arquivo); },
-      // A única superfície fora da região: um texto curto e uma cor por
-      // pessoa, e quem desenha é o produto. Os limites e as recusas aqui são
-      // os de `base.js` — um MOD que os estoure descobre **no teste dele**, e
-      // não numa lista que silenciosamente não mostra nada.
-      marcas: async pedidas => {
-        // **O que o MOD pediu**, antes de qualquer regra do produto.
-        //
-        // Guardado à parte porque as duas coisas se confundem com facilidade:
-        // o produto já joga fora uma marca de texto vazio, então um teste que
-        // olhasse só o resultado aprovaria um MOD que manda lixo e é salvo
-        // pela peneira do outro lado. A primeira reversão desta bateria provou
-        // exatamente isso.
-        pedidasDeMarca.length = 0;
-        pedidasDeMarca.push(structuredClone(pedidas ?? {}));
-        const entradas = Object.entries(pedidas ?? {});
-        if (entradas.length > 128) throw new Error('um MOD marca até 128 pessoas, e vieram ' + entradas.length);
-        const guardadas = {};
-        for (const [pessoa, marca] of entradas) {
-          const texto = String(marca?.texto ?? '').slice(0, 24);
-          if (!texto) continue;
-          const cor = marca?.cor;
-          if (cor !== undefined && (typeof cor !== 'string' || !/^#[0-9a-f]{6}$/i.test(cor))) {
-            throw new Error('a cor de uma marca precisa ser #rrggbb, e veio «' + cor + '»');
-          }
-          guardadas[String(pessoa)] = { texto, cor: cor ?? null };
+      // A única superfície fora da região: uma declaração por pessoa, na mesma
+      // gramática, montada pelo renderer do produto na lista dele. Os limites e
+      // as recusas aqui são os de `mods-regiao.js` — um MOD que ponha um botão
+      // num cartão descobre **no teste dele**, e não numa lista que
+      // silenciosamente não mostra o botão.
+      cartoes: async pedidos => {
+        const entradas = Object.entries(pedidos ?? {});
+        if (entradas.length > 64) throw new Error('um MOD dá cartão a até 64 pessoas, e vieram ' + entradas.length);
+        const DENTRO = new Set(['texto', 'titulo', 'linha', 'lista', 'item', 'midia']);
+        const montados = {};
+        let recusados = 0;
+        const andar = (no, fundura) => {
+          if (fundura > 4 || no == null) return [];
+          if (Array.isArray(no)) return no.flatMap(um => andar(um, fundura));
+          if (typeof no === 'string') return [{ texto: no }];
+          if (typeof no !== 'object' || !no.forma) return [];
+          if (!DENTRO.has(no.forma)) { recusados += 1; return []; }
+          return [{ ...no, dentro: andar(no.dentro, fundura + 1) }];
+        };
+        for (const [pessoa, declaracao] of entradas) {
+          const partes = andar(declaracao, 0);
+          if (!partes.length) continue;
+          if (partes.length > 24) throw new Error('um cartão cabe em 24 nós');
+          montados[String(pessoa)] = partes;
         }
-        marcas.length = 0;
-        marcas.push(guardadas);
+        cartoes.length = 0;
+        cartoes.push(montados);
+        pedidosDeCartao.length = 0;
+        pedidosDeCartao.push(structuredClone(pedidos ?? {}));
+        return recusados;
       },
     },
   });
@@ -86,10 +88,10 @@ function client(w, options = {}) {
   vm.runInContext(source, sandbox, { timeout: 1000 });
   return {
     regions, themes, requests, timers, errors, snapshot,
-    /** O que os MODs marcaram na lista de pessoas do produto, por último. */
-    marcas: () => marcas.at(-1) ?? {},
+    /** Os cartões que o produto montou na lista de pessoas, por último. */
+    cartoes: () => cartoes.at(-1) ?? {},
     /** O que o MOD **pediu**, antes da regra do produto. */
-    marcasPedidas: () => pedidasDeMarca.at(-1) ?? {},
+    cartoesPedidos: () => pedidosDeCartao.at(-1) ?? {},
     tick: () => { assert.equal(timers.length, 1); timers.shift()(); },
     // O que a pessoa fez. Quem monta o elemento é o produto, então o teste
     // manda o **evento** dele, e não um clique num DOM que não existe aqui.
@@ -623,54 +625,85 @@ if (manifest.id === 'seele/perfis') {
     assert.ok(controles.has('effect'), 'a minha ficha não trouxe a escolha de efeito');
     assert.equal(JSON.stringify(w.data), before, 'abrir a ficha escreveu no servidor');
   });
-  test('PERFIS: o pronome de quem o escreveu aparece na lista do produto', async () => {
+  test('PERFIS: o cartão de quem escreveu algo aparece na lista do produto', async () => {
     const w = world();
-    // Duas pessoas: uma escreveu pronome e cor, a outra não escreveu nada.
+    // Duas pessoas: uma escreveu perfil, a outra não escreveu nada.
+    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: 'Lia da Torre', pronouns: 'ela/dela', status: 'jogando', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    const c = client(w); await settle();
+
+    const cartoes = c.cartoes();
+    const meu = cartoes['2'];
+    assert.ok(meu, 'a pessoa 2 não ganhou cartão: ' + JSON.stringify(cartoes));
+    const textos = JSON.stringify(meu);
+    assert.match(textos, /Lia da Torre/, 'o nome exibido não entrou: ' + textos);
+    assert.match(textos, /ela\/dela/, 'o pronome não entrou: ' + textos);
+    assert.match(textos, /jogando/, 'o status não entrou: ' + textos);
+
+    // **Quem não escreveu nada não ganha cartão.** Uma moldura vazia ao lado
+    // de um nome é o produto anunciando uma ausência que ninguém pediu.
+    assert.equal(cartoes['1'], undefined, 'quem não tem perfil ganhou um cartão vazio');
+    // E o MOD **não pede** um cartão para essa pessoa: olhar só o resultado
+    // não provaria nada, porque o produto já descarta declaração vazia.
+    assert.equal(c.cartoesPedidos()['1'], undefined, 'o MOD pediu cartão para quem não escreveu nada');
+  });
+
+  test('PERFIS: o cartão é declaração, e nada dentro dele recebe clique', async () => {
+    const w = world();
     assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
 
-    const marcas = c.marcas();
-    assert.deepEqual(marcas['2'], { texto: 'ela/dela', cor: '#a78bfa' }, 'o pronome não chegou à lista: ' + JSON.stringify(marcas));
-    // **Quem não escreveu pronome não ganha selo.** Um retângulo vazio ao lado
-    // de um nome é o produto anunciando uma ausência que ninguém pediu.
-    // E este MOD **não pede** marca para quem não pôs pronome. Olhar só o
-    // resultado não provaria nada: o produto já descarta texto vazio, e um MOD
-    // que mandasse um selo vazio para cada pessoa passaria escondido atrás
-    // dessa peneira.
-    assert.equal(c.marcasPedidas()['1'], undefined, 'o MOD pediu um selo para quem não pôs pronome');
-    assert.equal(marcas['1'], undefined, 'quem não pôs pronome ganhou uma marca vazia');
-    // E o nome exibido **não** vira marca: a lista já escreve um nome.
-    assert.ok(!JSON.stringify(marcas).includes('Lia'), 'o nome exibido virou selo e repetiu o nome da linha');
+    // **Nada que receba foco ou clique.** A linha do roster já tem um botão do
+    // produto, e dividir foco e área de toque com um terceiro é o tipo de
+    // coisa que ninguém consegue depurar depois.
+    const pedido = JSON.stringify(c.cartoesPedidos());
+    for (const proibida of ['"botao"', '"campo"', '"escolha"', '"arquivo"', '"tela"']) {
+      assert.ok(!pedido.includes(proibida), `o cartão declarou ${proibida}: ` + pedido);
+    }
+    // E nenhuma medida: o tamanho é do produto.
+    for (const medida of ['largura', 'altura', 'cor', 'estilo']) {
+      assert.ok(!pedido.includes('"' + medida + '"'), `o cartão tentou escolher ${medida}: ` + pedido);
+    }
+    // **O nome exibido igual ao apelido não vira título**: a linha do roster já
+    // escreve um nome, e dois nomes iguais na mesma linha é a linha dizendo
+    // duas vezes a mesma coisa. A pessoa 2 se chama «Lia» no retrato, e foi
+    // «Lia» que ela pôs no perfil.
+    assert.equal(c.snapshot.presentes.find(p => p.id === 2).nickname, 'Lia', 'o retrato mudou de apelido');
+    const partes = c.cartoesPedidos()['2'] ?? [];
+    assert.ok(!partes.some(parte => parte.forma === 'titulo'), 'o nome repetido virou título: ' + JSON.stringify(partes));
+    assert.ok(partes.some(parte => parte.chave === 'pronome'), 'e o cartão ficou sem o que ele tem a dizer: ' + JSON.stringify(partes));
   });
 
-  test('PERFIS: uma cor inválida no perfil não derruba a lista nem o painel', async () => {
+  test('PERFIS: o retrato do cartão vem do servidor deste MOD, e nunca de um endereço', async () => {
     const w = world();
-    // `roxo` não é `#rrggbb`. O produto recusaria o conjunto inteiro, e com
-    // ele o pronome de todo mundo — por isso este MOD manda só o que passa.
     assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'elu/delu', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
-    // E então a cor é trocada **por fora**, como só dados de outro tempo ou de
-    // outro servidor chegariam: este servidor recusa `roxo` na entrada.
+    // Sem retrato guardado, o cartão não declara mídia nenhuma.
+    let c = client(w); await settle();
+    assert.ok(!JSON.stringify(c.cartoesPedidos()).includes('midia'), 'declarou retrato sem haver retrato');
+
+    // Com retrato, ele vem por `doServidor` — a única origem que a API aceita.
     const store = JSON.parse(w.data.profiles);
-    store['2'].accent = 'roxo';
+    store['2'].avatar = 'perfis/2/avatar';
     w.data.profiles = JSON.stringify(store);
-    const c = client(w); await settle();
-    assert.deepEqual(c.marcas()['2'], { texto: 'elu/delu', cor: null }, 'a cor inválida levou o pronome junto: ' + JSON.stringify(c.marcas()));
-    assert.equal(c.errors.length, 0, 'a lista recusou: ' + c.errors.join(' | '));
-    // E o painel continua desenhado.
-    assert.match(content(c), /ID 2/);
+    c = client(w); await settle();
+    const midia = (c.cartoesPedidos()['2'] ?? []).find(parte => parte.forma === 'midia');
+    assert.ok(midia, 'o retrato não entrou no cartão: ' + JSON.stringify(c.cartoesPedidos()));
+    assert.ok(midia.doServidor, 'o retrato não veio do servidor deste MOD');
+    assert.equal(midia.doServidor.pedido.op, 'asset');
+    assert.equal(midia.doServidor.pedido.slot, 'avatar');
+    assert.ok(!('fonte' in midia) && !('url' in midia) && !('src' in midia), 'o retrato ganhou uma segunda origem: ' + JSON.stringify(midia));
   });
 
-  test('PERFIS: sair do canal tira as marcas da lista', async () => {
+  test('PERFIS: sair do canal tira os cartões da lista', async () => {
     const w = world();
     assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
-    assert.ok(c.marcas()['2'], 'o pronome não chegou à lista');
-    // Fora de canal não há perfil de ninguém: uma marca de antes seria uma
+    assert.ok(c.cartoes()['2'], 'o cartão não chegou à lista');
+    // Fora de canal não há perfil de ninguém: um cartão de antes seria uma
     // afirmação sobre gente que este MOD não está mais vendo.
     c.snapshot.open_channel = null;
     c.snapshot.channels = [];
     c.tick(); await settle();
-    assert.deepEqual(c.marcas(), {}, 'a marca sobreviveu à saída do canal: ' + JSON.stringify(c.marcas()));
+    assert.deepEqual(c.cartoes(), {}, 'o cartão sobreviveu à saída do canal: ' + JSON.stringify(c.cartoes()));
   });
 
   test('PERFIS: editar e gravar muda o perfil, e a recusa do servidor é dita', async () => {
@@ -778,7 +811,7 @@ if (manifest.id === 'seele/perfis') {
   });
 }
 if (manifest.id === 'seele/estilo') {
-  test('ESTILO: os seis tokens, a densidade e a fonte; reset libera a camada', async () => {
+  test('ESTILO: os seis tokens, densidade, fonte, raio e brilho; reset libera a camada', async () => {
     const w = world(), initial = w.call({ op: 'view' });
     assert.equal(w.call({ op: 'save', theme: initial.theme, revision: 0 }).ok, true);
     const before = JSON.stringify(w.data), c = client(w); await settle();
@@ -788,7 +821,13 @@ if (manifest.id === 'seele/estilo') {
       apagado: initial.theme.muted, borda: initial.theme.border,
       densidade: initial.theme.density === 'comfortable' ? 'confortavel' : 'compacta',
       fonte: initial.theme.font === 'sans' ? 'sans' : 'mono',
+      // Número e booleano, e não texto: a API confere o tipo, escreve o `px` e
+      // monta a sombra. Um `'0px'` aqui seria este MOD escrevendo CSS.
+      arredondamento: initial.theme.radius,
+      brilho: initial.theme.glow,
     });
+    assert.equal(typeof initial.theme.radius, 'number', 'o raio deixou de ser número');
+    assert.equal(typeof initial.theme.glow, 'boolean', 'o brilho deixou de ser booleano');
     assert.equal(JSON.stringify(w.data), before);
     c.tick(); await settle(); assert.equal(c.themes.length, 1);
     assert.equal(w.call({ op: 'reset', revision: 1 }).ok, true);
@@ -875,6 +914,43 @@ if (manifest.id === 'seele/estilo') {
     assert.match(content(c), /[Cc]ontraste/);
     // E o que estava sendo editado continua lá para ser corrigido.
     assert.equal(c.controles().get('text').valor, '#050403');
+  });
+
+  test('ESTILO: arredondamento e brilho se escolhem, gravam e aplicam', async () => {
+    const w = world();
+    // `world()` faz a pessoa 1 ser administradora, e o cliente entra como 2.
+    const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    // Os dois são controles de verdade, e não texto de leitura.
+    const antes = c.controles();
+    assert.ok(antes.has('radius'), 'não há como escolher o arredondamento: ' + content(c));
+    assert.ok(antes.has('glow'), 'não há como escolher o brilho: ' + content(c));
+
+    c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
+    c.fire({ nome: 'escolha', chave: 'glow', valor: 'sim' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar' });
+    await settle(); await settle();
+
+    // **Gravado no servidor**, com os tipos que ele confere.
+    const guardado = w.call({ op: 'view' }).theme;
+    assert.equal(guardado.radius, 8, 'o arredondamento não chegou ao servidor');
+    assert.equal(guardado.glow, true, 'o brilho não chegou ao servidor');
+
+    // **E aplicado na sessão**, como número e booleano — nunca como CSS. Uma
+    // string aqui seria este MOD escrevendo `border-radius` na tela de quem
+    // conversa, que é o que a API existe para não permitir.
+    const aplicado = c.themes.at(-1);
+    assert.equal(aplicado.arredondamento, 8, 'o produto não recebeu o raio: ' + JSON.stringify(aplicado));
+    assert.equal(aplicado.brilho, true, 'o produto não recebeu o brilho: ' + JSON.stringify(aplicado));
+    assert.equal(typeof aplicado.arredondamento, 'number');
+    assert.equal(typeof aplicado.brilho, 'boolean');
+
+    // A escolha devolve texto; o que sai daqui é número. Sem a conversão, o
+    // rascunho ficaria com '8' e a tela diria «mudou» para sempre.
+    await settle();
+    assert.equal(c.controles().get('gravar')?.desligado, true, 'ficou dizendo que ainda há mudança por gravar');
   });
 
   test('ESTILO: quem não administra vê o tema e não recebe controles de edição', async () => {
