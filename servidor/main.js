@@ -69,11 +69,15 @@
         if(r.offset!==undefined){
           if(!Number.isInteger(r.offset)||r.offset<0||r.offset>total)fail('Posição de imagem inválida.');
           if(r.path!==path)fail('A imagem mudou. Abra o perfil novamente.');
-          return JSON.stringify({ok:true,path,total,image:sliceAsset(path,raw,r.offset)});
+          const fim=Math.min(r.offset+ASSET_PART,total);
+          return JSON.stringify({ok:true,path,total,image:sliceAsset(path,raw,r.offset),...(fim<total?{proximo:{offset:fim,path}}:{})});
         }
         // Small legacy assets retain their response shape; large assets require
         // pagination rather than exceeding SEELE's maximum reply-part count.
-        if(total>ASSET_PART)return JSON.stringify({ok:true,path,total,image:sliceAsset(path,raw,0),paged:true});
+        // `proximo` é a continuação que o SEELE junta ao pedido seguinte sem
+        // interpretar: ele não conhece a forma deste MOD, e não precisa.
+        // `paged` fica para quem já lia a resposta antiga.
+        if(total>ASSET_PART)return JSON.stringify({ok:true,path,total,image:sliceAsset(path,raw,0),paged:true,proximo:{offset:ASSET_PART,path}});
         return JSON.stringify({ok:true,image:sliceAsset(path,raw,0)});
       }
       // A forged owner/admin in r is irrelevant. Only ctx.person can mutate.
