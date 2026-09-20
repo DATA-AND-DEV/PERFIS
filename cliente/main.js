@@ -885,14 +885,14 @@ function oEditor() {
         { crescer: 1, base: 0, larguraMinima: 160 }),
       caixa([campo('status', 'STATUS', perfil.status ?? '')],
         { crescer: 1, base: 0, larguraMinima: 160 }),
-    ], { direcao: 'linha', intervalo: 12, quebra: 'sim' }),
+    ], { direcao: 'linha', intervalo: 16, quebra: 'sim' }),
     // **Multilinha.** U20: «"Sobre mim" é input de uma linha.» Não era uma
     // escolha deste pacote: a API 3 não tinha outra forma para declarar.
     textoLongo('bio', 'SOBRE MIM', perfil.bio ?? '', {
       linhas: 4,
       sugestao: 'O que você quer que as pessoas deste servidor saibam.',
     }),
-  ], { intervalo: 12 });
+  ]);
 
   const aparencia = pilha([
     grupo('Aparência'),
@@ -919,8 +919,8 @@ function oEditor() {
     ...(meuPerfil().avatar || meuPerfil().banner ? [caixa([
       botao('tirar-avatar', 'TIRAR', !meuPerfil().avatar, { variante: 'discreta' }),
       botao('tirar-banner', 'TIRAR FAIXA', !meuPerfil().banner, { variante: 'discreta' }),
-    ], { direcao: 'linha', intervalo: 8, quebra: 'sim' })] : []),
-  ], { intervalo: 12 });
+    ], { direcao: 'linha', intervalo: 12, quebra: 'sim' })] : []),
+  ]);
 
   return [
     previa,
@@ -929,7 +929,7 @@ function oEditor() {
       caixa([
         caixa([identidade], { crescer: 1.4, base: 0, larguraMinima: 280 }),
         caixa([aparencia], { crescer: 1, base: 0, larguraMinima: 220 }),
-      ], { direcao: 'linha', intervalo: 24, quebra: 'sim', alinhar: 'inicio' }),
+      ], { direcao: 'linha', intervalo: 32, quebra: 'sim', alinhar: 'inicio' }),
     ]),
     ...(aviso ? [caixa([aviso], { corpo: 12, cor: acento })] : []),
     acoes([
