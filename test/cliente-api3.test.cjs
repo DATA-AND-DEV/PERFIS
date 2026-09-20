@@ -326,7 +326,10 @@ const CHAVES_DA_FORMA = {
   // o botão de arquivo não tinha nome acessível nenhum, e o seletor do sistema
   // abria dizendo «Escolha um arquivo para este MOD» com JSONs na lista.
   arquivo: ['chave', 'dentro', 'rotulo', 'desligado', 'finalidade', 'tipos', 'limiteDeBytes'],
-  tela: ['chave', 'largura', 'altura', 'figuras', 'tracos'],
+  // `fundo` chegou com o conserto do mapa (auditoria 20/09/2026): ele era
+  // montado como mídia **ao lado** do canvas, e as coordenadas das peças
+  // ficavam num plano que ninguém alinhava com a imagem.
+  tela: ['chave', 'largura', 'altura', 'figuras', 'tracos', 'fundo'],
   midia: ['chave', 'fonte', 'doServidor', 'descricao', 'tocando'],
   // ---- API 4: composição ----
   caixa: ['dentro'], pilha: ['dentro'], grade: ['dentro'], rolagem: ['dentro'],
@@ -444,25 +447,66 @@ test('resposta do canal anterior não é exibida após navegar', async () => {
   assert.match(content(c), /Canal alterado/);
 });
 if (manifest.id === 'seele/mesa') {
-  test('MESA: a mesa se cria daqui, e cena, ficha e peça também', async () => {
+  // ---- a mesa virou um espaço, e não um rodapé (U01, U25) ----
+  //
+  // A auditoria de 20/09/2026 mediu que jogar exigia rolar uma faixa de 240px
+  // com o tabuleiro, os controles, as fichas, o compêndio e o registro
+  // empilhados. Agora a faixa diz qual mesa e de quem é a vez, e a atividade
+  // acontece numa página com abas.
+  //
+  // Os casos abaixo passaram a abrir a mesa antes de olhar os controles, e a
+  // olhar a **página**. O que eles verificam não mudou: é o mesmo contrato com
+  // o servidor, no lugar onde a pessoa de fato o exerce.
+
+  /** Abre a página da mesa e espera as idas à ponte assentarem. */
+  const abrirMesa = async c => { c.agir('abrir-mesa'); await assentar(); };
+  /** Abre uma aba da página. */
+  const naAba = async (c, qual) => {
+    c.fire({ nome: 'aba', chave: 'aba', valor: qual });
+    await assentar();
+  };
+  /** Os controles da página da mesa, e não os da faixa. */
+  const naMesa = c => c.controlesDe('mesa');
+  /** O que a página da mesa diz agora. */
+  const oQueAMesaDiz = c => JSON.stringify(c.superficie('mesa'));
+  test('MESA: a mesa se cria num diálogo, com sistema e mestre escolhidos', async () => {
     const w = world();
-    // Sem campanha: o único caminho é criar uma, e ele está na região.
+    // Sem campanha: o único caminho é criar uma, e a porta está na faixa.
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     // Quem cria a mesa é quem administra: o retrato precisa dizer que é ela,
     // porque é esse nome que vai no `gm` do pedido.
     await settle();
     c.snapshot.me = 1;
     c.tick(); await settle();
-    assert.ok(c.controles().has('criar-campanha'), 'não há como criar a mesa: ' + content(c));
-    assert.equal(c.controles().get('criar-campanha').desligado, true, 'CRIAR MESA começa ligado sem nome');
 
-    c.fire({ nome: 'campo', chave: 'nova-campanha', valor: 'A Casa' }); await settle();
-    assert.equal(c.controles().get('criar-campanha').desligado, false);
-    c.fire({ nome: 'botao', chave: 'criar-campanha' }); await settle(); await settle();
-    assert.ok(w.call({ op: 'view' }, '1').campaign, 'a mesa não foi criada: ' + content(c));
+    // A faixa oferece a porta, e não um formulário.
+    assert.ok(c.controles().has('abrir-criar'), 'a faixa não tem porta para criar a mesa');
+    c.fire({ nome: 'botao', chave: 'abrir-criar' });
+    await assentar();
+
+    // **Sistema e mestre voltaram ao diálogo.** A auditoria anotou que «a
+    // criação fixa sistema `free` e GM atual; a versão anterior oferecia
+    // sistema e GM no diálogo». Fixar os dois não foi decisão: foi o que cabia
+    // na faixa.
+    const noDialogo = c.controlesDe('mesa-criar');
+    assert.ok(noDialogo.has('criar-campanha'), 'não há como criar a mesa: '
+      + JSON.stringify(c.superficie('mesa-criar')));
+    assert.ok(noDialogo.has('novo-sistema'), 'o diálogo não oferece o sistema');
+    assert.ok(noDialogo.has('novo-gm'), 'o diálogo não oferece o mestre');
+    assert.equal(noDialogo.get('criar-campanha').desligado, true, 'CRIAR MESA começa ligado sem nome');
+
+    c.fire({ nome: 'campo', chave: 'nova-campanha', valor: 'A Casa' });
+    await assentar();
+    assert.equal(c.controlesDe('mesa-criar').get('criar-campanha').desligado, false);
+    c.fire({ nome: 'botao', chave: 'criar-campanha' });
+    await assentar(20);
+    assert.ok(w.call({ op: 'view' }, '1').campaign, 'a mesa não foi criada');
     assert.equal(w.call({ op: 'view' }, '1').campaign.name, 'A Casa');
+
+    // E a página da mesa abre com ela.
+    await abrirMesa(c);
     // O rascunho esvaziou: deixá-lo cheio repetiria o nome na criação seguinte.
-    assert.equal(c.controles().get('nova-cena').valor, '');
+    assert.equal(naMesa(c).get('nova-cena').valor, '');
 
     c.fire({ nome: 'campo', chave: 'nova-cena', valor: 'Salão' }); await settle();
     c.fire({ nome: 'botao', chave: 'criar-cena' }); await settle(); await settle();
@@ -486,10 +530,11 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
 
     c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
-    assert.ok(c.controles().has('ferir'), 'a ficha aberta não trouxe os controles de vida');
+    assert.ok(naMesa(c).has('ferir'), 'a ficha aberta não trouxe os controles de vida');
 
     c.fire({ nome: 'campo', chave: 'dano', valor: '4' }); await settle();
     c.fire({ nome: 'botao', chave: 'ferir' }); await settle(); await settle();
@@ -519,6 +564,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
     // Maior que um fragmento e que um pedaço: é o que prova a junção.
     const png = Buffer.concat([
@@ -529,7 +575,7 @@ if (manifest.id === 'seele/mesa') {
     for (let i = 0; i < 120; i++) await settle();
 
     const guardada = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id);
-    assert.ok(guardada.asset, 'o mapa não foi publicado: ' + content(c));
+    assert.ok(guardada.asset, 'o mapa não foi publicado: ' + oQueAMesaDiz(c));
     const lido = w.call({ op: 'asset', scene: id }, '1');
     const base64 = lido.image.slice(lido.image.indexOf(',') + 1);
     assert.deepEqual(Buffer.from(base64, 'base64'), png, 'o mapa chegou diferente do que saiu');
@@ -541,11 +587,12 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
     c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
 
     for (const chave of ['f-name', 'f-className', 'f-level', 'f-ac', 'a-str', 'f-inventory']) {
-      assert.ok(c.controles().has(chave), `a ficha não trouxe «${chave}»`);
+      assert.ok(naMesa(c).has(chave), `a ficha não trouxe «${chave}»`);
     }
     c.fire({ nome: 'campo', chave: 'f-className', valor: 'Ladina' });
     c.fire({ nome: 'campo', chave: 'f-level', valor: '3' });
@@ -555,7 +602,7 @@ if (manifest.id === 'seele/mesa') {
 
     // O relógio bate no meio da edição, a cada dois segundos.
     c.tick(); await settle();
-    assert.equal(c.controles().get('f-className').valor, 'Ladina', 'a consulta apagou a edição');
+    assert.equal(naMesa(c).get('f-className').valor, 'Ladina', 'a consulta apagou a edição');
 
     c.fire({ nome: 'botao', chave: 'gravar-ficha' }); await settle(); await settle();
     const salva = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -573,6 +620,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'token-add', scene: id, name: 'Chefe', x: 3, y: 3 });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
     c.fire({ nome: 'botao', chave: 'modo-parede' }); await settle();
     // Em cima da peça, de propósito: quem pinta parede quer pintar ali também.
@@ -589,7 +637,7 @@ if (manifest.id === 'seele/mesa') {
 
     // E sair do modo devolve o arraste.
     c.fire({ nome: 'botao', chave: 'modo-parede' }); await settle();
-    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    const tela = [...naMesa(c).values()].find(n => n.forma === 'tela');
     const peca = tela.figuras.find(f => String(f.chave || '').startsWith('peca:'));
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: peca.x, y: peca.y, alvo: peca.chave });
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'terminou', x: 26 * 6, y: 26 * 6, alvo: peca.chave });
@@ -604,6 +652,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
     c.fire({ nome: 'escolha', chave: 'trilha-mesa', valor: 'battle' });
     await settle(); await settle();
@@ -626,6 +675,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
     c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
 
@@ -637,7 +687,7 @@ if (manifest.id === 'seele/mesa') {
     for (let i = 0; i < 60; i++) await settle();
 
     const comRetrato = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
-    assert.ok(comRetrato.portrait, 'o retrato não foi publicado: ' + content(c));
+    assert.ok(comRetrato.portrait, 'o retrato não foi publicado: ' + oQueAMesaDiz(c));
     const lido = w.call({ op: 'portrait-asset', sheet: ficha.id }, '1');
     const base64 = lido.image.slice(lido.image.indexOf(',') + 1);
     assert.deepEqual(Buffer.from(base64, 'base64'), png, 'o retrato chegou diferente');
@@ -645,7 +695,7 @@ if (manifest.id === 'seele/mesa') {
 
     // E ele aparece na ficha, vindo do servidor deste MOD.
     c.tick(); await settle();
-    const midia = [...c.controles().values()].find(n => n.forma === 'midia' && String(n.chave).startsWith('retrato:'));
+    const midia = [...naMesa(c).values()].find(n => n.forma === 'midia' && String(n.chave).startsWith('retrato:'));
     assert.ok(midia, 'o retrato não foi montado na ficha');
     assert.equal(midia.doServidor.pedido.op, 'portrait-asset');
   });
@@ -656,12 +706,13 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'entry-save', name: 'Míssil', kind: 'magia', level: 1, published: true });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
     const magia = w.call({ op: 'view' }, '1').campaign.entries.at(-1);
     c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
 
     // Os espaços são editáveis, nível a nível.
-    assert.ok(c.controles().has('s-0'), 'não há campo de espaços de nível 1');
+    assert.ok(naMesa(c).has('s-0'), 'não há campo de espaços de nível 1');
     c.fire({ nome: 'campo', chave: 's-0', valor: '2' }); await settle();
     c.fire({ nome: 'botao', chave: 'magia-' + magia.id }); await settle();
     c.fire({ nome: 'botao', chave: 'gravar-ficha' }); await settle(); await settle();
@@ -685,6 +736,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
     c.fire({ nome: 'botao', chave: 'abrir-ficha-' + ficha.id }); await settle();
 
@@ -713,6 +765,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
     c.fire({ nome: 'campo', chave: 'v-name', valor: 'Poção' });
     c.fire({ nome: 'campo', chave: 'v-level', valor: '2' });
@@ -731,7 +784,7 @@ if (manifest.id === 'seele/mesa') {
     // E editar um já existente muda o mesmo verbete, sem criar outro.
     c.tick(); await settle();
     c.fire({ nome: 'botao', chave: 'editar-verbete-' + criado.id }); await settle();
-    assert.equal(c.controles().get('v-name').valor, 'Poção');
+    assert.equal(naMesa(c).get('v-name').valor, 'Poção');
     c.fire({ nome: 'campo', chave: 'v-name', valor: 'Poção maior' }); await settle();
     c.fire({ nome: 'botao', chave: 'gravar-verbete' }); await settle(); await settle();
     const entradas = w.call({ op: 'view' }, '1').campaign.entries;
@@ -746,8 +799,9 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
-    assert.ok(c.controles().has('c-cols'), 'não há ajuste de grade');
+    assert.ok(naMesa(c).has('c-cols'), 'não há ajuste de grade');
     c.fire({ nome: 'campo', chave: 'c-cols', valor: '30' });
     c.fire({ nome: 'campo', chave: 'c-rows', valor: '20' });
     c.fire({ nome: 'campo', chave: 'c-description', valor: 'Um salão longo.' });
@@ -763,7 +817,7 @@ if (manifest.id === 'seele/mesa') {
 
     // E o tabuleiro acompanha a grade nova.
     c.tick(); await settle();
-    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    const tela = [...naMesa(c).values()].find(n => n.forma === 'tela');
     assert.equal(tela.largura, 30 * 26, 'o tabuleiro não acompanhou a grade');
   });
   test('MESA: o tabuleiro é figura declarada, e arrastar uma peça a move no servidor', async () => {
@@ -786,8 +840,9 @@ if (manifest.id === 'seele/mesa') {
     // então a permissão de jogador não entra neste caso.
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
-    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    const tela = [...naMesa(c).values()].find(n => n.forma === 'tela');
     assert.ok(tela, 'o tabuleiro não virou uma tela');
     const pecas = tela.figuras.filter(f => typeof f.chave === 'string' && f.chave.startsWith('peca:'));
     assert.equal(pecas.length, 2, 'as duas peças da mesma casa não foram declaradas');
@@ -806,7 +861,7 @@ if (manifest.id === 'seele/mesa') {
     await settle();
     // O movimento **não** foi ao servidor: um pedido por ponto satura a fila.
     assert.equal(c.requests.length, antes, 'cada ponto do arraste foi ao servidor');
-    const durante = [...c.controles().values()].find(n => n.forma === 'tela')
+    const durante = [...naMesa(c).values()].find(n => n.forma === 'tela')
       .figuras.find(f => f.chave === peca.chave);
     assert.equal(durante.x, 26 * 7 + 13, 'a peça não acompanhou o dedo');
 
@@ -830,12 +885,13 @@ if (manifest.id === 'seele/mesa') {
     // Quem entra é a pessoa 2, que não é GM e não tem ficha nesta peça.
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '2', canal) });
     await settle();
-    const tela = [...c.controles().values()].find(n => n.forma === 'tela');
+    await abrirMesa(c);
+    const tela = [...naMesa(c).values()].find(n => n.forma === 'tela');
     const peca = tela.figuras.find(f => typeof f.chave === 'string' && f.chave.startsWith('peca:'));
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: peca.x, y: peca.y, alvo: peca.chave });
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'terminou', x: 26 * 9, y: 26 * 9, alvo: peca.chave });
     await settle(); await settle();
-    assert.match(content(c), /a peça não se move/);
+    assert.match(oQueAMesaDiz(c), /a peça não se move/);
     const gravada = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id).tokens[0];
     assert.equal(gravada.x, 1, 'o servidor moveu uma peça que não era de quem arrastou');
   });
@@ -854,6 +910,7 @@ if (manifest.id === 'seele/mesa') {
     const w = world();
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
 
     c.fire({ nome: 'campo', chave: 'nova-campanha', valor: 'A Casa' });
     await settle();
@@ -885,18 +942,100 @@ if (manifest.id === 'seele/mesa') {
     // a marca faria a segunda ser respondida com a projeção da primeira.
     assert.notEqual(criacao.body.nonce, rolagem.body.nonce);
   });
+  // ---- o mapa é o fundo da tela, e não uma imagem ao lado dela ----
+  //
+  // A auditoria anotou: «O mapa é montado como mídia separada do canvas, em vez
+  // de fundo sob as peças.» Um `<img>` ao lado de um `<canvas>` é um mapa que
+  // não tem relação nenhuma com onde as peças estão — zoom, deslocamento e
+  // coordenadas ficam em dois planos que ninguém alinha.
+  test('MESA: o mapa entra como fundo do tabuleiro, e não ao lado dele', async () => {
+    const w = world();
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    const id = cena.campaign.scenes.at(-1).id;
+    w.escritaDireta({ op: 'scene-show', id });
+
+    // Um mapa mínimo pelo caminho de sempre do servidor.
+    const png = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+    const parte = w.escritaDireta({
+      op: 'image-part', scene: id, upload: 'm1', total: 1, index: 0, part: png,
+    });
+    assert.equal(parte.ok, true, parte.error);
+
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle(); await abrirMesa(c);
+
+    const tela = [...naMesa(c).values()].find(n => n.forma === 'tela');
+    assert.ok(tela, 'o tabuleiro não virou uma tela');
+    assert.ok(tela.fundo, 'o mapa não entrou como fundo do tabuleiro: ' + JSON.stringify(tela));
+    assert.equal(tela.fundo.doServidor.pedido.op, 'asset');
+    assert.equal(tela.fundo.doServidor.pedido.scene, id);
+
+    // E ele **não** é declarado uma segunda vez como mídia ao lado: duas
+    // cópias da mesma imagem é o defeito que esta mudança existe para tirar.
+    const midias = [...naMesa(c).values()].filter(n => n.forma === 'midia'
+      && String(n.chave || '').startsWith('cena:'));
+    assert.equal(midias.length, 0,
+      'o mapa continua sendo declarado ao lado do tabuleiro: ' + JSON.stringify(midias));
+  });
+
+  // ---- a trilha escolhida passou a tocar ----
+  //
+  // «As escolhas de trilha alteram estado no servidor, mas o cliente atual não
+  // declara tocador de som.» O estado ia e ninguém ouvia nada.
+  test('MESA: a trilha escolhida vira um tocador com o arquivo do pacote', async () => {
+    const w = world();
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle(); await abrirMesa(c);
+
+    // Sem trilha, não há tocador: silêncio não é um som.
+    assert.ok(!oQueAMesaDiz(c).includes('"trilha:'), 'declarou tocador sem trilha escolhida');
+
+    c.fire({ nome: 'escolha', chave: 'trilha-mesa', valor: 'battle' });
+    await assentar(20);
+
+    const tocador = [...naMesa(c).values()].find(n => String(n.chave || '').startsWith('trilha:'));
+    assert.ok(tocador, 'a trilha escolhida não virou tocador: ' + oQueAMesaDiz(c));
+    assert.equal(tocador.forma, 'midia');
+    // **Do pacote, e não de um endereço.** A janela de quem joga não busca
+    // bytes na rede de ninguém, e o manifesto é quem autoriza o arquivo.
+    assert.ok(tocador.fonte, 'o tocador não nomeou um arquivo do pacote');
+    assert.ok(manifest.arquivos.includes(tocador.fonte),
+      'o tocador nomeou um arquivo que o manifesto não declara: ' + tocador.fonte);
+    assert.doesNotMatch(JSON.stringify(tocador), /https?:/);
+    assert.equal(tocador.tocando, true, 'a trilha foi escolhida e não começou a tocar');
+  });
+
+  // ---- a degradação é explícita, e ela é testada ----
+  test('MESA: sem superfícies, a faixa volta a ser a mesa inteira', async () => {
+    const w = world();
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    const c = client(w, {
+      semApi4: true,
+      request: (_i, canal, corpo) => w.call(corpo, '1', canal),
+    });
+    await settle();
+    assert.equal(c.errors.length, 0,
+      'o MOD falhou num SEELE sem superfícies: ' + JSON.stringify(c.errors));
+    assert.match(content(c), /Casa/, 'a faixa não voltou a desenhar a mesa');
+    assert.ok(c.controles().has('rolar'), 'a faixa não voltou a oferecer os dados');
+    assert.equal(c.contribuicoes.length, 0, 'registrou contribuição num SEELE que não as tem');
+  });
+
   test('MESA: rolar dados vai ao servidor com a fórmula digitada', async () => {
     const w = world();
     w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     c.fire({ nome: 'campo', chave: 'formula', valor: '2d6+3' });
     c.fire({ nome: 'botao', chave: 'rolar' });
     await settle(); await settle();
     const rolagem = c.requests.find(r => r.body.op === 'roll');
     assert.ok(rolagem, 'ROLAR não foi ao servidor');
     assert.equal(rolagem.body.formula, '2d6+3');
-    assert.match(content(c), /Dados/);
+    assert.match(oQueAMesaDiz(c), /Dados/);
   });
   test('MESA: um toque no vazio do tabuleiro não move peça nenhuma', async () => {
     const w = world();
@@ -907,6 +1046,7 @@ if (manifest.id === 'seele/mesa') {
     w.escritaDireta({ op: 'token-add', scene: id, name: 'Chefe', x: 1, y: 1 });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrirMesa(c);
     const antes = c.requests.length;
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'comecou', x: 300, y: 300, alvo: null });
     c.fire({ nome: 'traco', chave: 'tabuleiro', fase: 'terminou', x: 300, y: 300, alvo: null });
@@ -1266,6 +1406,12 @@ if (manifest.id === 'seele/perfis') {
   });
 }
 if (manifest.id === 'seele/estilo') {
+  /** Abre a página de aparência e espera ela assentar. */
+  const abrir = async c => { c.agir('abrir-aparencia'); await assentar(); };
+  /** Os controles da página, e não os da faixa. */
+  const naPagina = c => c.controlesDe('estilo-aparencia');
+  const oQueAPaginaDiz = c => JSON.stringify(c.superficie('estilo-aparencia'));
+
   test('ESTILO: os seis tokens, densidade, fonte, raio e brilho; reset libera a camada', async () => {
     const w = world(), initial = w.call({ op: 'view' });
     assert.equal(w.escritaDireta({ op: 'save', theme: initial.theme, revision: 0 }).ok, true);
@@ -1288,44 +1434,81 @@ if (manifest.id === 'seele/estilo') {
     assert.equal(w.escritaDireta({ op: 'reset', revision: 1 }).ok, true);
     c.tick(); await settle(); assert.deepEqual(c.themes.at(-1), {});
   });
+
   test('ESTILO: recusa do produto é mostrada e não confirma aplicação', async () => {
     const w = world(), initial = w.call({ op: 'view' }); w.escritaDireta({ op: 'save', theme: initial.theme, revision: 0 });
     let fail = true;
     const c = client(w, { tema: async () => { if (fail) throw Error('acento já é do MOD outro/tema'); } });
-    await settle(); assert.match(content(c), /outro\/tema/); assert.equal(c.themes.length, 0);
-    fail = false; c.tick(); await settle(); assert.equal(c.themes.length, 1); assert.match(content(c), /aplicad/);
+    await settle();
+    assert.match(content(c), /outro\/tema/); assert.equal(c.themes.length, 0);
+    fail = false; c.tick(); await settle();
+    assert.equal(c.themes.length, 1,
+      'a segunda tentativa não aplicou depois de o produto voltar a aceitar');
   });
 
-  // ---- o que a API 3 completa devolveu -------------------------------------
+  // ---- a aparência virou uma página (U01, U23) ----
+  //
+  // A auditoria mediu seis campos de hexadecimal num rodapé de 240px, sem
+  // seletor e sem amostra, para uma decisão que vale para todo mundo no
+  // servidor. Agora a faixa diz o estado e abre a porta; a decisão acontece
+  // numa página com seletores, amostras e presets.
+  test('ESTILO: a faixa vira uma linha, e a aparência é uma página', async () => {
+    const w = world();
+    const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
 
-  test('ESTILO: quem administra edita e grava, e o que o MOD não edita é preservado', async () => {
+    assert.ok(c.controles().has('abrir-aparencia'), 'a faixa não tem porta para a aparência');
+    const entradas = c.entradas();
+    assert.equal(entradas.length, 1, 'o MOD não registrou entrada de navegação');
+    assert.equal(entradas[0].rotulo, 'Aparência do servidor');
+
+    await abrir(c);
+    const controles = naPagina(c);
+    // U23: «ESTILO usa inputs de hexadecimal em vez de seletor e amostra.»
+    assert.equal(controles.get('accent')?.forma, 'cor',
+      'o destaque voltou a ser um campo de texto hexadecimal');
+    assert.ok(controles.has('density'), 'não há escolha de densidade');
+    // As abas existem, e a de conjuntos também: U04 pediu grupos, e o §2 do
+    // plano pediu presets pelo nome.
+    assert.match(oQueAPaginaDiz(c), /"forma":"abas"/);
+    assert.match(oQueAPaginaDiz(c), /CONJUNTOS/);
+  });
+
+  test('ESTILO: quem administra edita e publica, e o que o MOD não edita é preservado', async () => {
     const w = world(); const inicial = w.call({ op: 'view' });
     // `world()` faz a pessoa 1 ser administradora, e o cliente entra como 2.
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrir(c);
+    assert.equal(naPagina(c).get('gravar').desligado, true, 'PUBLICAR começa ligado sem nada mudado');
 
-    const controles = c.controles();
-    assert.ok(controles.has('accent'), 'não há campo para o destaque');
-    assert.ok(controles.has('density'), 'não há escolha de densidade');
-    assert.equal(controles.get('gravar').desligado, true, 'GRAVAR começa ligado sem nada mudado');
-
-    // A pessoa digita uma cor nova. A tela acompanha **sem** ir ao servidor.
+    // A pessoa escolhe uma cor nova. A tela acompanha **sem** ir ao servidor.
     const pedidosAntes = c.requests.length;
-    c.fire({ nome: 'campo', chave: 'accent', valor: '#6bffb6' });
-    await settle();
-    assert.equal(c.requests.length, pedidosAntes, 'digitar foi ao servidor');
-    assert.equal(c.controles().get('accent').valor, '#6bffb6');
-    assert.equal(c.controles().get('gravar').desligado, false, 'GRAVAR não ligou com a mudança');
+    c.fire({ nome: 'cor', chave: 'accent', valor: '#6bffb6' });
+    await assentar();
+    assert.equal(c.requests.length, pedidosAntes, 'escolher uma cor foi ao servidor');
+    assert.equal(naPagina(c).get('accent').valor, '#6bffb6');
+    assert.equal(naPagina(c).get('gravar').desligado, false, 'PUBLICAR não ligou com a mudança');
 
-    // E as escolhas entram no mesmo rascunho.
+    // **A prévia é local.** O tema aplicado nesta sessão já é o rascunho, e
+    // nada disso saiu daqui: é o que U23 chamou de «prévia local separada de
+    // publicar para o servidor».
+    assert.equal(c.themes.at(-1).acento, '#6bffb6',
+      'a prévia não aplicou a cor escolhida na sessão de quem edita');
+    assert.equal(w.call({ op: 'view' }).theme.accent, inicial.theme.accent,
+      'a prévia escreveu no servidor');
+
+    // E as escolhas de forma entram no mesmo rascunho, na aba de forma.
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'forma' });
+    await assentar();
     c.fire({ nome: 'escolha', chave: 'density', valor: 'comfortable' });
     c.fire({ nome: 'escolha', chave: 'font', valor: 'sans' });
-    await settle();
-    assert.equal(c.controles().get('density').valor, 'comfortable');
-    assert.equal(c.controles().get('font').valor, 'sans');
+    await assentar();
+    assert.equal(naPagina(c).get('density').valor, 'comfortable');
+    assert.equal(naPagina(c).get('font').valor, 'sans');
 
     c.fire({ nome: 'botao', chave: 'gravar' });
-    await settle(); await settle();
+    await assentar(20);
     const gravado = w.call({ op: 'view' }).theme;
     assert.equal(gravado.accent, '#6bffb6');
     assert.equal(gravado.density, 'comfortable');
@@ -1339,36 +1522,94 @@ if (manifest.id === 'seele/estilo') {
     assert.equal(c.themes.at(-1).acento, '#6bffb6');
   });
 
+  // ---- a prévia é reversível, e é ela que U23 pediu ----
+  //
+  // «A cor muda após gravar, sem prévia reversível explícita.» Antes o único
+  // jeito de ver uma cor era publicá-la para todo mundo. Agora desligar a
+  // prévia devolve o tema do servidor **sem** desfazer o rascunho.
+  test('ESTILO: desligar a prévia devolve o tema publicado e guarda o rascunho', async () => {
+    const w = world(); const inicial = w.call({ op: 'view' });
+    w.escritaDireta({ op: 'save', theme: inicial.theme, revision: 0 });
+    const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    await abrir(c);
+
+    c.fire({ nome: 'cor', chave: 'accent', valor: '#6bffb6' });
+    await assentar();
+    assert.equal(c.themes.at(-1).acento, '#6bffb6', 'a prévia não aplicou');
+
+    c.fire({ nome: 'marca', chave: 'previa', valor: false });
+    await assentar();
+    assert.equal(c.themes.at(-1).acento, inicial.theme.accent,
+      'desligar a prévia não devolveu o tema publicado');
+    assert.equal(naPagina(c).get('accent').valor, '#6bffb6',
+      'desligar a prévia jogou fora o rascunho');
+
+    c.fire({ nome: 'marca', chave: 'previa', valor: true });
+    await assentar();
+    assert.equal(c.themes.at(-1).acento, '#6bffb6', 'religar a prévia não a devolveu');
+  });
+
+  test('ESTILO: um conjunto pronto preenche tudo, e continua editável', async () => {
+    const w = world();
+    const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    await abrir(c);
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'presets' });
+    await assentar();
+    // **Um conjunto diferente do que está de pé.** O tema padrão deste mundo é
+    // o do próprio SEELE, e o botão daquele conjunto nasce desligado — que é o
+    // certo: «usar o que já está usado» não é uma ação.
+    const prontos = [...naPagina(c).entries()]
+      .filter(([k, no]) => k.startsWith('preset-') && no.desligado === false);
+    assert.ok(prontos.length, 'nenhum conjunto pronto está disponível: ' + oQueAPaginaDiz(c));
+    const usar = prontos[0][0];
+
+    c.fire({ nome: 'botao', chave: usar });
+    await assentar();
+    assert.equal(naPagina(c).get('gravar').desligado, false,
+      'escolher um conjunto não marcou nada por publicar');
+
+    // E ele continua editável: é um ponto de partida, e não um modo.
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'cores' });
+    await assentar();
+    c.fire({ nome: 'cor', chave: 'accent', valor: '#123456' });
+    await assentar();
+    assert.equal(naPagina(c).get('accent').valor, '#123456');
+  });
+
   test('ESTILO: a consulta de quatro segundos não apaga o que está sendo editado', async () => {
     const w = world();
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
-    c.fire({ nome: 'campo', chave: 'accent', valor: '#123456' });
-    await settle();
+    await abrir(c);
+    c.fire({ nome: 'cor', chave: 'accent', valor: '#123456' });
+    await assentar();
     // O relógio bate no meio da edição, como bate a cada quatro segundos.
-    c.tick(); await settle();
+    c.tick(); await assentar();
     assert.equal(
-      c.controles().get('accent').valor, '#123456',
-      'a consulta ao servidor apagou o que estava sendo digitado',
+      naPagina(c).get('accent').valor, '#123456',
+      'a consulta ao servidor apagou o que estava sendo escolhido',
     );
     // E DESCARTAR devolve o que o servidor tem.
     c.fire({ nome: 'botao', chave: 'descartar' });
-    await settle();
-    assert.notEqual(c.controles().get('accent').valor, '#123456');
+    await assentar();
+    assert.notEqual(naPagina(c).get('accent').valor, '#123456');
   });
 
-  test('ESTILO: a recusa do servidor vira frase na região, e não silêncio', async () => {
+  test('ESTILO: a recusa do servidor vira frase na página, e não silêncio', async () => {
     const w = world();
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrir(c);
     // Contraste impossível: texto igual ao fundo. O servidor recusa.
-    c.fire({ nome: 'campo', chave: 'text', valor: '#050403' });
-    await settle();
+    c.fire({ nome: 'cor', chave: 'text', valor: '#050403' });
+    await assentar();
     c.fire({ nome: 'botao', chave: 'gravar' });
-    await settle(); await settle();
-    assert.match(content(c), /[Cc]ontraste/);
+    await assentar(20);
+    assert.match(oQueAPaginaDiz(c), /[Cc]ontraste/);
     // E o que estava sendo editado continua lá para ser corrigido.
-    assert.equal(c.controles().get('text').valor, '#050403');
+    assert.equal(naPagina(c).get('text').valor, '#050403');
   });
 
   test('ESTILO: arredondamento e brilho se escolhem, gravam e aplicam', async () => {
@@ -1376,17 +1617,20 @@ if (manifest.id === 'seele/estilo') {
     // `world()` faz a pessoa 1 ser administradora, e o cliente entra como 2.
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrir(c);
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'forma' });
+    await assentar();
 
     // Os dois são controles de verdade, e não texto de leitura.
-    const antes = c.controles();
-    assert.ok(antes.has('radius'), 'não há como escolher o arredondamento: ' + content(c));
-    assert.ok(antes.has('glow'), 'não há como escolher o brilho: ' + content(c));
+    const antes = naPagina(c);
+    assert.ok(antes.has('radius'), 'não há como escolher o arredondamento: ' + oQueAPaginaDiz(c));
+    assert.ok(antes.has('glow'), 'não há como escolher o brilho: ' + oQueAPaginaDiz(c));
 
     c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
     c.fire({ nome: 'escolha', chave: 'glow', valor: 'sim' });
-    await settle();
+    await assentar();
     c.fire({ nome: 'botao', chave: 'gravar' });
-    await settle(); await settle();
+    await assentar(20);
 
     // **Gravado no servidor**, com os tipos que ele confere.
     const guardado = w.call({ op: 'view' }).theme;
@@ -1404,8 +1648,9 @@ if (manifest.id === 'seele/estilo') {
 
     // A escolha devolve texto; o que sai daqui é número. Sem a conversão, o
     // rascunho ficaria com '8' e a tela diria «mudou» para sempre.
-    await settle();
-    assert.equal(c.controles().get('gravar')?.desligado, true, 'ficou dizendo que ainda há mudança por gravar');
+    await assentar();
+    assert.equal(naPagina(c).get('gravar')?.desligado, true,
+      'ficou dizendo que ainda há mudança por publicar');
   });
 
   // ---- o guarda da afirmação obsoleta (U24) ----
@@ -1417,23 +1662,26 @@ if (manifest.id === 'seele/estilo') {
   //
   // Duas descrições concorrentes do mesmo recurso foi o que produziu a
   // regressão. Este caso fixa a que fica: o **resultado** da aplicação.
-  test('ESTILO: depois de aplicar, a região diz o que foi desenhado — e não uma recusa inventada', async () => {
+  test('ESTILO: depois de aplicar, a página diz o que foi desenhado — e não uma recusa inventada', async () => {
     const w = world();
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
+    await abrir(c);
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'forma' });
+    await assentar();
     c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
     c.fire({ nome: 'escolha', chave: 'glow', valor: 'sim' });
-    await settle();
+    await assentar();
     c.fire({ nome: 'botao', chave: 'gravar' });
-    await settle(); await settle(); await settle();
+    await assentar(20);
 
-    const dito = content(c);
+    const dito = oQueAPaginaDiz(c);
     assert.doesNotMatch(dito, /recusa os dois/,
       'a afirmação obsoleta de recusa voltou depois de o produto ter aplicado');
     assert.doesNotMatch(dito, /não desenhado aqui/,
-      'a região continua dizendo que o que foi aplicado não é desenhado');
+      'a página continua dizendo que o que foi aplicado não é desenhado');
     assert.match(dito, /Desenhado nesta sessão/,
-      'a região não disse o resultado real da aplicação');
+      'a página não disse o resultado real da aplicação');
     assert.match(dito, /arredondamento 8 px/);
     assert.match(dito, /com brilho/);
   });
@@ -1451,23 +1699,45 @@ if (manifest.id === 'seele/estilo') {
       },
     });
     await settle();
+    await abrir(c);
+    c.fire({ nome: 'aba', chave: 'aba', valor: 'forma' });
+    await assentar();
     c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
-    await settle();
-    c.fire({ nome: 'botao', chave: 'gravar' });
-    await settle(); await settle(); await settle();
+    await assentar(20);
 
-    const dito = content(c);
-    assert.match(dito, /arredondamento fora do intervalo aceito/,
-      'a recusa do produto não chegou a quem estava editando: ' + dito);
+    assert.match(oQueAPaginaDiz(c), /arredondamento fora do intervalo aceito/,
+      'a recusa do produto não chegou a quem estava editando: ' + oQueAPaginaDiz(c));
   });
 
-  test('ESTILO: quem não administra vê o tema e não recebe controles de edição', async () => {
+  // **Quem não administra recebe o tema, e não um formulário** — §2 do plano.
+  test('ESTILO: quem não administra vê a aparência e não recebe controles de edição', async () => {
     const w = world();
     // A pessoa 2 não é administradora neste mundo.
     const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '2', canal) });
     await settle();
-    const controles = c.controles();
-    assert.equal(controles.size, 0, 'apareceu controle de edição para quem não administra');
-    assert.match(content(c), /administra/);
+    // A faixa só tem a porta, e ela diz «ver» e não «editar».
+    const naFaixa = c.controles();
+    assert.equal(naFaixa.size, 1, 'apareceu controle de edição na faixa de quem não administra');
+    assert.equal(naFaixa.get('abrir-aparencia').dentro, 'VER APARÊNCIA');
+
+    await abrir(c);
+    const controles = naPagina(c);
+    assert.equal(controles.size, 0,
+      'apareceu controle de edição para quem não administra: ' + oQueAPaginaDiz(c));
+    assert.match(oQueAPaginaDiz(c), /administra/);
+  });
+
+  // ---- a degradação é explícita, e ela é testada ----
+  test('ESTILO: sem superfícies, a faixa volta a ser o formulário', async () => {
+    const w = world();
+    const c = client(w, {
+      semApi4: true,
+      request: (_id, canal, corpo) => w.call(corpo, '1', canal),
+    });
+    await settle();
+    assert.equal(c.errors.length, 0,
+      'o MOD falhou num SEELE sem superfícies: ' + JSON.stringify(c.errors));
+    assert.ok(c.controles().has('accent'), 'a faixa não voltou a oferecer as cores');
+    assert.equal(c.contribuicoes.length, 0, 'registrou contribuição num SEELE que não as tem');
   });
 }
