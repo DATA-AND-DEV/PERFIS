@@ -196,9 +196,22 @@ const pagina = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <aside id="regioes-dos-mods" class="regioes-dos-mods" hidden></aside>
   <ul id="lista-roster" class="roster"></ul>
   <ul id="lista-mods-navegacao" class="canais" hidden></ul>
+  <!--
+    **Dentro da tela, como no produto.** No \`index.html\` do SEELE os dois
+    palcos são filhos de \`section#tela-sessao\`, e não do \`<body>\`. Aqui eles
+    ficavam no \`<body>\`, e a diferença não era cosmética: \`prenderFoco\`
+    percorre os ancestrais do diálogo tornando os **irmãos** inertes, e a
+    revisão de 20/09/2026 encontrou um defeito que só aparecia com a hierarquia
+    do produto — o palco dentro de uma seção que virava inerte, levando o
+    próprio diálogo junto.
+
+    Um laboratório com estrutura diferente do produto não é um laboratório mais
+    simples: é um que aprova o que o produto recusa, e o criador de MOD aprende
+    nele.
+  -->
+  <div id="palco-de-camadas" class="palco-de-camadas" hidden></div>
+  <div id="avisos-de-mod" class="avisos-de-mod" hidden></div>
 </main>
-<div id="palco-de-camadas" class="palco-de-camadas" hidden></div>
-<div id="avisos-de-mod" class="avisos-de-mod" hidden></div>
 <script src="/mods-estilos.js"></script>
 <script src="/mods-regiao.js"></script>
 <script src="/mods-superficies.js"></script>
@@ -223,8 +236,33 @@ const params=new URLSearchParams(location.search);
 const pessoa=params.get('pessoa')||'1', servidor=params.get('servidor')||'a';
 
 // A instância de mentira: o renderer registra recursos nela, e sair os solta.
+//
+// **A funcao 'registrar' devolve o descartador**, como a do produto. Ela
+// devolvia o tamanho do vetor — o retorno de 'push' —, e um numero e truthy:
+// quem guardava esse retorno para esquecer o recurso depois guardava um 1, e
+// chama-lo era 'esquecer is not a function'. O laboratorio continuava verde
+// porque a saida da sessao nao era exercitada ate o fim.
+//
+// Idempotente e removendo a entrada, como 'InstanciaDeMod.registrar': um
+// recurso que sai antes da sessao nao pode ficar retido ate ela acabar, que e
+// o R4 da revisao de 20/09/2026.
 const recursos=[];
-const instancia={geracao:1,registrar:(porque,soltar)=>recursos.push({porque,soltar}),admite:()=>true};
+const instancia={
+  geracao:1,
+  admite:()=>true,
+  registrar:(porque,soltar)=>{
+    let saiu=false;
+    const entrada={porque,soltar};
+    recursos.push(entrada);
+    return ()=>{
+      if(saiu)return;
+      saiu=true;
+      const onde=recursos.indexOf(entrada);
+      if(onde>=0)recursos.splice(onde,1);
+      try{soltar();}catch(e){console.warn(porque,e);}
+    };
+  },
+};
 
 const dono={
   instancia,
@@ -355,7 +393,9 @@ async function atender(m){
     if(m.tipo==='superficie-fechar'){superficies.fechar(m.superficie,m.motivo);responder(m.n,true,{valor:null});return;}
     if(m.tipo==='superficie-descartar'){superficies.descartar(m.superficie);responder(m.n,true,{valor:null});return;}
     if(m.tipo==='contribuir'){responder(m.n,true,{valor:contribuicoes.registrar({id},instancia,m.pedido)});return;}
-    if(m.tipo==='revogar-contribuicao'){responder(m.n,true,{valor:contribuicoes.revogar(m.handle)});return;}
+    // Com o dono, como o roteador do produto: sem ele, o laboratório aceitaria
+    // uma revogação que o SEELE recusa, e ensinaria o contrário do contrato.
+    if(m.tipo==='revogar-contribuicao'){responder(m.n,true,{valor:contribuicoes.revogar(m.handle,{id,instancia})});return;}
     throw new Error('a API de MODs não conhece «'+m.tipo+'»');
   }catch(erro){responder(m.n,false,{erro:erro.message});}
 }

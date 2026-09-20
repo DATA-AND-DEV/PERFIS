@@ -132,8 +132,17 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
     // ---- sair solta tudo ----
     await aba.click('#sair');
     await aba.waitForTimeout(500);
-    assert.equal(await aba.locator('[data-mod="' + manifest.id + '"]').count(), 0,
-      'o que o MOD desenhou sobreviveu à saída da sessão');
+    // **Nomeados, e não contados.** «2 !== 0» mandou procurar às cegas o que
+    // tinha sobrevivido; a lista diz qual nó e de quem ele é filho, e foi ela
+    // que encontrou em dois minutos o `esquecer` que a instância de mentira
+    // não devolvia.
+    const sobreviventes = await aba.locator('[data-mod="' + manifest.id + '"]').evaluateAll(
+      ns => ns.map(n => n.tagName + '.' + n.className + '#' + (n.id || '-')
+        + ' pai=' + (n.parentElement?.id || n.parentElement?.className || '?')),
+    );
+    assert.deepEqual(sobreviventes, [],
+      'o que o MOD desenhou sobreviveu à saída da sessão'
+      + (erros.length ? ' — e a janela registrou: ' + erros.join(' · ') : ''));
     assert.equal(await aba.locator('.superficie-de-mod').count(), 0,
       'uma superfície do MOD sobreviveu à saída da sessão');
     assert.equal(await aba.locator('#lista-mods-navegacao button').count(), 0,
