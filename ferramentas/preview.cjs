@@ -254,13 +254,23 @@ const instancia={
     let saiu=false;
     const entrada={porque,soltar};
     recursos.push(entrada);
-    return ()=>{
-      if(saiu)return;
+    // As duas metades, como as do produto: 'esquecer' tira da lista e devolve
+    // se havia o que tirar; chamar o descartador faz as duas coisas. Quem se
+    // descarta sozinho — uma superficie, por exemplo — chama so 'esquecer',
+    // para nao pedir de volta o descarte que ja esta acontecendo.
+    const esquecer=()=>{
+      if(saiu)return false;
       saiu=true;
       const onde=recursos.indexOf(entrada);
       if(onde>=0)recursos.splice(onde,1);
+      return true;
+    };
+    const soltarRecurso=()=>{
+      if(!esquecer())return;
       try{soltar();}catch(e){console.warn(porque,e);}
     };
+    soltarRecurso.esquecer=esquecer;
+    return soltarRecurso;
   },
 };
 
