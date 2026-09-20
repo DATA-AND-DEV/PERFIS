@@ -86,8 +86,34 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
     aba.on('pageerror', e => erros.push(e.message));
     await aba.goto(url + '/?pessoa=2');
 
-    const regiao = aba.locator('[data-mod="' + manifest.id + '"]').first();
-    await regiao.getByText(esperado, { exact: false }).waitFor({ timeout: 15000 });
+    // **A faixa permanente não volta, e nada abre sozinho.** N2 da validação
+    // nativa de 20/09/2026: com os três instalados, `ui.regiao` a cada volta do
+    // relógio tomava cerca de 230 px da janela — quase um terço — sem nenhuma
+    // atividade aberta.
+    //
+    // Conferido **antes** de abrir qualquer coisa, que é o estado que a
+    // validação descreveu: chegar no servidor e já ter um terço da janela
+    // ocupado por três formulários que ninguém pediu.
+    if (manifest.api >= 4) {
+      const entradas = aba.locator('#lista-mods-navegacao button');
+      await entradas.first().waitFor({ timeout: 15000 });
+      const faixa = aba.locator('#regioes-dos-mods');
+      const altura = await faixa.evaluate(n => n.getBoundingClientRect().height);
+      assert.ok(altura <= 1,
+        'a faixa permanente voltou a ocupar ' + Math.round(altura) + 'px sem nenhuma '
+        + 'atividade aberta: a região legada está sendo pintada num pacote de API 4');
+      // E a atividade começa por um gesto: a entrada existe e é o que abre.
+      await entradas.first().click();
+      await aba.locator('.superficie-de-mod').first().waitFor({ timeout: 15000 });
+    }
+
+    // **Onde quer que ele tenha desenhado.** Era `.first()`, que numa página com
+    // a faixa antes da lista significava «na faixa». Num pacote de API 4 a
+    // faixa fica vazia e o que o MOD desenha está no cartão de alguém ou na
+    // superfície que acabou de abrir — e o que se quer provar é que ele
+    // desenhou, não onde.
+    const doMod = aba.locator('[data-mod="' + manifest.id + '"]');
+    await doMod.getByText(esperado, { exact: false }).first().waitFor({ timeout: 15000 });
 
     // **A fronteira, e ela não mudou em nenhuma versão da API.**
     const sessao = aba.locator('#tela-sessao');
@@ -109,12 +135,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
         'a ficha de outra pessoa apareceu para quem não é dona dela nem GM');
     }
 
-    // ---- a superfície abre, e ela é do produto ----
+    // ---- a superfície aberta acima é do produto ----
     if (manifest.api >= 4) {
       const entradas = aba.locator('#lista-mods-navegacao button');
       assert.ok(await entradas.count() > 0,
         'o MOD não registrou entrada de navegação: U03 continua de pé');
-      await entradas.first().click();
 
       const superficie = aba.locator('.superficie-de-mod').first();
       await superficie.waitFor({ timeout: 15000 });
@@ -148,10 +173,18 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
     assert.equal(await aba.locator('#lista-mods-navegacao button').count(), 0,
       'a entrada de navegação sobreviveu à saída da sessão');
 
-    // E recarregar monta de novo, do estado do servidor.
+    // E recarregar monta de novo, do estado do servidor. Na API 4 a atividade
+    // não volta aberta — e não deve: quem recarrega cai na conversa, e não na
+    // janela que estava aberta antes. O gesto de abrir é o mesmo da primeira
+    // vez, e é isso que se repete aqui.
     await aba.reload();
-    await aba.locator('[data-mod="' + manifest.id + '"]').first()
-      .getByText(esperado, { exact: false }).waitFor({ timeout: 15000 });
+    if (manifest.api >= 4) {
+      const entradas = aba.locator('#lista-mods-navegacao button');
+      await entradas.first().waitFor({ timeout: 15000 });
+      await entradas.first().click();
+    }
+    await aba.locator('[data-mod="' + manifest.id + '"]')
+      .getByText(esperado, { exact: false }).first().waitFor({ timeout: 15000 });
 
     assert.deepEqual(erros, [], 'a janela registrou erros: ' + erros.join(' · '));
     console.log(manifest.id + ': renderer do produto, prelúdio real, superfícies, '

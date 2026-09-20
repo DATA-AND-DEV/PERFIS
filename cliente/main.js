@@ -188,28 +188,70 @@ function interfaceMod(id, titulo, intervalo = 4000) {
     ...extra,
   });
 
+  /**
+   * Diz alguma coisa a quem está olhando, **sem ocupar a sessão**.
+   *
+   * # Por que ela existe
+   *
+   * A validação nativa de 20/09/2026, N2: «a faixa inferior continua nos três
+   * MODs, tomando quase um terço da janela». A causa não era a faixa existir:
+   * era `iniciar` chamar `desenhar` — e portanto `ui.regiao` — a cada volta do
+   * relógio, ligado ou não. Com os três instalados, a sessão perdia 230 px de
+   * altura permanentemente, mesmo com nenhuma atividade aberta.
+   *
+   * # O que muda, e o que **não** muda
+   *
+   * Na API 4 a atividade mora numa superfície, que abre por um gesto. O que
+   * sobra para dizer entre uma abertura e outra é recado curto: «gravado»,
+   * «não foi possível atualizar». Isso é um aviso, e um aviso sai sozinho.
+   *
+   * Na API 3 não há aviso nem superfície, e a região continua sendo o único
+   * lugar onde este MOD existe. Ela continua exatamente como era — é o
+   * caminho de degradação, e não um caminho pior.
+   *
+   * **O que não muda é que a falha é dita.** Mandá-la para lugar nenhum seria
+   * trocar uma faixa que incomoda por um erro que ninguém vê.
+   */
+  const dizer = (mensagem, tom = 'normal') => {
+    if (temSuperficies) return avisar(mensagem, tom).then(() => {}, () => {});
+    return desenhar([texto(mensagem)]);
+  };
+
   function iniciar(consultar, semCanal = async () => {}, aoEvento = null) {
     /**
      * Redesenha com o que o estado local diz **agora**.
      *
      * É o que um evento chama. Ele não vai ao servidor: quem digita espera a
      * letra aparecer, e não esperar a rede.
+     *
+     * Na API 4 ele não pinta a região: quem desenha é a superfície aberta, e
+     * o MOD a atualiza pelo punho dela.
      */
-    const repintar = partes => { void desenhar(partes); };
+    const repintar = partes => { if (!temSuperficies) void desenhar(partes); };
 
     if (aoEvento) {
       ui.aoEvento(evento => {
-        // O erro do MOD fica com o MOD, e é dito na região em vez de sumir.
+        // O erro do MOD fica com o MOD, e é dito em vez de sumir.
         try {
           const talvez = aoEvento(evento, canalAtual, repintar);
           if (talvez && typeof talvez.catch === 'function') {
-            talvez.catch(erro => void desenhar([texto('Falhou: ' + (erro.message || String(erro)))]));
+            talvez.catch(erro => void dizer('Falhou: ' + (erro.message || String(erro)), 'erro'));
           }
         } catch (erro) {
-          void desenhar([texto('Falhou: ' + (erro.message || String(erro)))]);
+          void dizer('Falhou: ' + (erro.message || String(erro)), 'erro');
         }
       });
     }
+
+    // Um recado repetido a cada quatro segundos é um recado que vira ruído: a
+    // fila de avisos tem fim, e enchê-la com a mesma frase tira dela os
+    // recados que importam. Só o que mudou é dito.
+    let ultimoRecado = '';
+    const recado = (mensagem, tom) => {
+      if (mensagem === ultimoRecado) return Promise.resolve();
+      ultimoRecado = mensagem;
+      return dizer(mensagem, tom);
+    };
 
     async function atualizar() {
       try {
@@ -217,15 +259,24 @@ function interfaceMod(id, titulo, intervalo = 4000) {
         canalAtual = canal;
         if (canal === null) {
           await semCanal();
-          await desenhar([texto('Entre em um servidor com um canal de texto.')]);
+          await recado('Entre em um servidor com um canal de texto.');
         } else {
           const resultado = await consultar(snapshot, canal);
-          // Não apresente uma resposta do canal anterior após a navegação.
-          if (canalDe(await api.snapshot()) === canal) await desenhar(resultado);
-          else await desenhar([texto('Canal alterado. Atualizando…')]);
+          // **Não apresente uma resposta do canal anterior após a navegação.**
+          // A conferência vale nas duas versões; o que muda é onde a resposta
+          // aparece.
+          if (canalDe(await api.snapshot()) === canal) {
+            // **A região só na API 3.** Na 4, `consultar` continua rodando —
+            // ele é quem atualiza cartões, contribuições e o que estiver
+            // aberto —, e o que ele devolve para a faixa não é desenhado.
+            if (!temSuperficies) await desenhar(resultado);
+            ultimoRecado = '';
+          } else {
+            await recado('Canal alterado. Atualizando…');
+          }
         }
       } catch (erro) {
-        try { await desenhar([texto('Não foi possível atualizar: ' + (erro.message || String(erro)))]); }
+        try { await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro'); }
         catch (falha) { console.error(titulo + ': ' + (falha.message || String(falha))); }
       } finally {
         // Agenda depois de concluir: nunca sobrepõe consultas nem repete
@@ -239,7 +290,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar,
+    request, iniciar, desenhar, dizer,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle
@@ -518,13 +569,40 @@ async function registrarApresentacao() {
 
 // ------------------------------------------------------- as superfícies
 
+/**
+ * Quantas pessoas o diretório monta de uma vez.
+ *
+ * **Não é gosto, é o fio.** Cada cartão do diretório dá cerca de 700 bytes de
+ * declaração, e o teto por mensagem da ponte é 12.288. Com setenta pessoas, o
+ * `superficie-montar` dava 52.862 bytes: a mensagem é recusada, a página nasce
+ * vazia, e quem está olhando não descobre por quê.
+ *
+ * É o mesmo defeito que a validação nativa de 20/09/2026 encontrou no ESTILO
+ * (N1). Lá ele aparecia com uma pessoa só, porque eram três abas montadas de
+ * uma vez; aqui ele aparece a partir de umas vinte pessoas, e por isso não
+ * apareceu naquela rodada — o servidor de teste tinha uma.
+ *
+ * A conta, medida e não estimada: dezesseis cartões deram 12.792 bytes, ou
+ * cerca de 780 por cartão mais 300 de casca. Dez deixa a mensagem perto de
+ * 8 KiB e guarda margem para nome longo, status longo e faixa — que é o que
+ * um cartão cheio tem e o do teste não tinha.
+ */
+const PESSOAS_POR_PAGINA = 10;
+
+/** Em que página do diretório estamos. Volta a zero ao reabrir. */
+let paginaDoDiretorio = 0;
+
 /** O diretório: quem está aqui, com o cartão de cada um e o que abrir. */
 function oDiretorio() {
   if (!ultimo) return [texto('Consultando os perfis deste servidor…')];
   if (!ultimo.ids.length) return [texto('Nenhuma pessoa disponível.')];
 
   const meu = String(ultimo.me);
-  const cartoes = ultimo.ids.map(id => {
+  const paginas = Math.max(1, Math.ceil(ultimo.ids.length / PESSOAS_POR_PAGINA));
+  const pagina = Math.min(Math.max(paginaDoDiretorio, 0), paginas - 1);
+  const primeira = pagina * PESSOAS_POR_PAGINA;
+  const daPagina = ultimo.ids.slice(primeira, primeira + PESSOAS_POR_PAGINA);
+  const cartoes = daPagina.map(id => {
     const perfil = ultimo.perfis[id] ?? {};
     const eu = id === meu;
     return caixa([
@@ -560,9 +638,24 @@ function oDiretorio() {
   return [
     caixa(['Cada pessoa aqui escolheu como aparecer neste servidor.'],
       { opacidade: 0.75, corpo: 11 }),
+    // **Quantas existem, e quais estão nesta página.** A contagem total é o
+    // que alguém procura para saber se falta gente; ela não pode sumir só
+    // porque a página mostra dezesseis.
+    caixa([ultimo.ids.length + ' pessoa(s) neste servidor'
+      + (paginas > 1
+        ? ' · mostrando ' + (primeira + 1) + '–' + (primeira + daPagina.length)
+        : '')],
+    { corpo: 11, opacidade: 0.7 }),
     // Grade: duas colunas em janela larga, uma quando o contêiner aperta. A
     // consulta é **do contêiner** e não da janela — ver `classes` abaixo.
     grade(cartoes, { colunas: 2, intervalo: 12 }, { classe: 'diretorio' }),
+    ...(paginas > 1 ? [acoes([
+      botao('diretorio-anterior', 'ANTERIORES', pagina === 0, { variante: 'discreta' }),
+      espaco(),
+      caixa(['página ' + (pagina + 1) + ' de ' + paginas], { corpo: 11, opacidade: 0.7 }),
+      espaco(),
+      botao('diretorio-proximas', 'PRÓXIMAS', pagina >= paginas - 1, { variante: 'discreta' }),
+    ])] : []),
   ];
 }
 
@@ -739,6 +832,9 @@ function cartaoDaPreviaComRascunho(id) {
 
 async function abrirDiretorio() {
   if (!temSuperficies) return;
+  // Abrir começa na primeira página: quem fechou na página quatro e voltou
+  // meia hora depois procura o começo, e não onde parou.
+  if (!telas.diretorio) paginaDoDiretorio = 0;
   telas.diretorio ??= await pagina('perfis-diretorio', 'Perfis deste servidor');
   await telas.diretorio.classes(CLASSES_DO_DIRETORIO);
   await telas.diretorio.montar(oDiretorio());
@@ -1063,6 +1159,14 @@ iniciar(
 
     if (evento.chave === 'abrir-diretorio') return abrirDiretorio();
     if (evento.chave === 'abrir-editor') return abrirEditor();
+
+    // As páginas do diretório. Elas existem porque a declaração inteira não
+    // cabe na ponte — ver `PESSOAS_POR_PAGINA`.
+    if (evento.chave === 'diretorio-anterior' || evento.chave === 'diretorio-proximas') {
+      paginaDoDiretorio += evento.chave === 'diretorio-proximas' ? 1 : -1;
+      if (paginaDoDiretorio < 0) paginaDoDiretorio = 0;
+      return repintarTelas();
+    }
     if (evento.chave.startsWith('abrir-')) {
       const id = evento.chave.slice('abrir-'.length);
       if (!temSuperficies) {

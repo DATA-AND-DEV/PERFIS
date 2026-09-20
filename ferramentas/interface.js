@@ -185,28 +185,70 @@ function interfaceMod(id, titulo, intervalo = 4000) {
     ...extra,
   });
 
+  /**
+   * Diz alguma coisa a quem está olhando, **sem ocupar a sessão**.
+   *
+   * # Por que ela existe
+   *
+   * A validação nativa de 20/09/2026, N2: «a faixa inferior continua nos três
+   * MODs, tomando quase um terço da janela». A causa não era a faixa existir:
+   * era `iniciar` chamar `desenhar` — e portanto `ui.regiao` — a cada volta do
+   * relógio, ligado ou não. Com os três instalados, a sessão perdia 230 px de
+   * altura permanentemente, mesmo com nenhuma atividade aberta.
+   *
+   * # O que muda, e o que **não** muda
+   *
+   * Na API 4 a atividade mora numa superfície, que abre por um gesto. O que
+   * sobra para dizer entre uma abertura e outra é recado curto: «gravado»,
+   * «não foi possível atualizar». Isso é um aviso, e um aviso sai sozinho.
+   *
+   * Na API 3 não há aviso nem superfície, e a região continua sendo o único
+   * lugar onde este MOD existe. Ela continua exatamente como era — é o
+   * caminho de degradação, e não um caminho pior.
+   *
+   * **O que não muda é que a falha é dita.** Mandá-la para lugar nenhum seria
+   * trocar uma faixa que incomoda por um erro que ninguém vê.
+   */
+  const dizer = (mensagem, tom = 'normal') => {
+    if (temSuperficies) return avisar(mensagem, tom).then(() => {}, () => {});
+    return desenhar([texto(mensagem)]);
+  };
+
   function iniciar(consultar, semCanal = async () => {}, aoEvento = null) {
     /**
      * Redesenha com o que o estado local diz **agora**.
      *
      * É o que um evento chama. Ele não vai ao servidor: quem digita espera a
      * letra aparecer, e não esperar a rede.
+     *
+     * Na API 4 ele não pinta a região: quem desenha é a superfície aberta, e
+     * o MOD a atualiza pelo punho dela.
      */
-    const repintar = partes => { void desenhar(partes); };
+    const repintar = partes => { if (!temSuperficies) void desenhar(partes); };
 
     if (aoEvento) {
       ui.aoEvento(evento => {
-        // O erro do MOD fica com o MOD, e é dito na região em vez de sumir.
+        // O erro do MOD fica com o MOD, e é dito em vez de sumir.
         try {
           const talvez = aoEvento(evento, canalAtual, repintar);
           if (talvez && typeof talvez.catch === 'function') {
-            talvez.catch(erro => void desenhar([texto('Falhou: ' + (erro.message || String(erro)))]));
+            talvez.catch(erro => void dizer('Falhou: ' + (erro.message || String(erro)), 'erro'));
           }
         } catch (erro) {
-          void desenhar([texto('Falhou: ' + (erro.message || String(erro)))]);
+          void dizer('Falhou: ' + (erro.message || String(erro)), 'erro');
         }
       });
     }
+
+    // Um recado repetido a cada quatro segundos é um recado que vira ruído: a
+    // fila de avisos tem fim, e enchê-la com a mesma frase tira dela os
+    // recados que importam. Só o que mudou é dito.
+    let ultimoRecado = '';
+    const recado = (mensagem, tom) => {
+      if (mensagem === ultimoRecado) return Promise.resolve();
+      ultimoRecado = mensagem;
+      return dizer(mensagem, tom);
+    };
 
     async function atualizar() {
       try {
@@ -214,15 +256,24 @@ function interfaceMod(id, titulo, intervalo = 4000) {
         canalAtual = canal;
         if (canal === null) {
           await semCanal();
-          await desenhar([texto('Entre em um servidor com um canal de texto.')]);
+          await recado('Entre em um servidor com um canal de texto.');
         } else {
           const resultado = await consultar(snapshot, canal);
-          // Não apresente uma resposta do canal anterior após a navegação.
-          if (canalDe(await api.snapshot()) === canal) await desenhar(resultado);
-          else await desenhar([texto('Canal alterado. Atualizando…')]);
+          // **Não apresente uma resposta do canal anterior após a navegação.**
+          // A conferência vale nas duas versões; o que muda é onde a resposta
+          // aparece.
+          if (canalDe(await api.snapshot()) === canal) {
+            // **A região só na API 3.** Na 4, `consultar` continua rodando —
+            // ele é quem atualiza cartões, contribuições e o que estiver
+            // aberto —, e o que ele devolve para a faixa não é desenhado.
+            if (!temSuperficies) await desenhar(resultado);
+            ultimoRecado = '';
+          } else {
+            await recado('Canal alterado. Atualizando…');
+          }
         }
       } catch (erro) {
-        try { await desenhar([texto('Não foi possível atualizar: ' + (erro.message || String(erro)))]); }
+        try { await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro'); }
         catch (falha) { console.error(titulo + ': ' + (falha.message || String(falha))); }
       } finally {
         // Agenda depois de concluir: nunca sobrepõe consultas nem repete
@@ -236,7 +287,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar,
+    request, iniciar, desenhar, dizer,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle

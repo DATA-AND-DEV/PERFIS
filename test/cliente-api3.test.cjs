@@ -62,7 +62,7 @@ function client(w, options = {}) {
       },
     },
     SeeleUI: {
-      regiao: async tree => { checkTree(tree); regions.push(structuredClone(tree)); },
+      regiao: async tree => { checkTree(tree); cabeNaPonte('regiao', { conteudo: tree }); regions.push(structuredClone(tree)); },
       tema: async values => { if (options.tema) await options.tema(values); themes.push(structuredClone(values)); },
       // A API 3 completa: a janela fala com o MOD sem que ele tenha perguntado.
       // Um só ouvinte, e o último vence — é o que o produto oferece.
@@ -115,6 +115,7 @@ function client(w, options = {}) {
             id: chave,
             montar: async arvore => {
               checkTree(arvore);
+              cabeNaPonte('superficie-montar', { superficie: chave, arvore });
               tela.arvores.push(structuredClone(arvore));
             },
             classes: async mapa => {
@@ -381,6 +382,34 @@ function checkEstilo(estilo, onde) {
   }
 }
 
+/**
+ * O teto por mensagem do produto, e a única coisa que atravessa a ponte.
+ *
+ * # Por que ele está aqui
+ *
+ * A validação nativa de 20/09/2026, N1: o ESTILO montava as três abas de uma
+ * vez, dava **14.164 bytes** num `superficie-montar`, e o teto por mensagem é
+ * 12.288. A página nascia vazia com `fila-cheia` na tela — que nem era a
+ * razão certa. Nada na suíte deste pacote media o tamanho do que ele manda:
+ * o laboratório recebe a árvore como objeto, e um objeto não tem tamanho de
+ * fio.
+ *
+ * A conta é a do prelúdio: `JSON.stringify({ tipo, n, ...carga })` em bytes
+ * UTF-8. O `n` real tem mais de um dígito numa sessão longa, e por isso entra
+ * aqui com folga para não medir menos do que o produto mede.
+ */
+const TETO_DA_MENSAGEM = 12 * 1024;
+function cabeNaPonte(tipo, carga) {
+  const texto = JSON.stringify({ tipo, n: 999999, ...carga });
+  const bytes = Buffer.byteLength(texto, 'utf8');
+  assert.ok(
+    bytes <= TETO_DA_MENSAGEM,
+    `«${tipo}» tem ${bytes} bytes e o teto por mensagem do produto é `
+    + `${TETO_DA_MENSAGEM}: na janela isso é uma promessa recusada e uma tela `
+    + 'que não aparece. Mande menos de uma vez, ou monte só a parte que aparece.',
+  );
+}
+
 function checkTree(tree, depth = 0) {
   // O teto da superfície, que é o maior dos três perfis do produto.
   assert.ok(depth <= 16, 'o renderer do produto cortaria este conteúdo');
@@ -413,12 +442,27 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
  * se está esperando, para ninguém voltar a contar `await settle()` na mão.
  */
 const assentar = async (voltas = 12) => { for (let i = 0; i < voltas; i += 1) await settle(); };
-const content = c => JSON.stringify(c.regions.at(-1));
+/**
+ * O que o MOD disse por último, onde quer que ele diga.
+ *
+ * Na API 3 ele diz na região, que é o único lugar que ele tem. Na API 4 o
+ * recado curto — «não foi possível atualizar», «entre num canal» — vira aviso,
+ * porque a faixa permanente saiu: ela tomava quase um terço da janela com os
+ * três MODs ligados, e ninguém a pediu (N2 da validação nativa de 20/09/2026).
+ *
+ * O teste continua sendo sobre a mesma coisa: **que a falha é dita**. O lugar
+ * mudou, e por isso este ajudante olha os dois.
+ */
+const content = c => JSON.stringify(c.regions.at(-1) ?? null) + ' ' + JSON.stringify(c.avisos.at(-1) ?? null);
 test('o cliente final executa sem DOM e só consulta o próprio servidor', async () => {
   const c = client(world()); await settle();
   // O pacote declara uma API que este SEELE executa — ver `APIS_ACEITAS`.
   assert.ok([3, 4].includes(manifest.api), 'manifesto declara API ' + manifest.api);
-  assert.ok(c.regions.length); assert.equal(c.errors.length, 0);
+  // **Ele desenhou alguma coisa**, e onde ele desenha depende da versão: na
+  // API 3 é a região; na 4 é a entrada de navegação, o cartão ou a superfície.
+  // Exigir a região aqui exigiria de volta a faixa permanente que N2 tirou.
+  assert.ok(c.regions.length || c.contribuicoes.length);
+  assert.equal(c.errors.length, 0);
   assert.ok(c.requests.length); assert.ok(c.requests.every(r => r.id === manifest.id && r.body.op === 'view'));
   assert.equal(c.timers.length, 1);
 });
@@ -432,13 +476,22 @@ test('consulta lenta não agenda outra consulta em paralelo', async () => {
   const w = world(), c = client(w, { request: () => new Promise(resolve => { release = resolve; }) });
   await settle(); assert.equal(c.requests.length, 1); assert.equal(c.timers.length, 0);
   release(w.call({ op: 'view' }, '2')); await settle();
-  assert.equal(c.timers.length, 1); assert.equal(c.regions.length, 1);
+  // Uma consulta, uma volta: o que este caso prova é o agendamento — a segunda
+  // consulta não é marcada antes de a primeira terminar. A contagem de regiões
+  // saiu porque na API 4 não há região: a faixa permanente foi tirada em N2.
+  assert.equal(c.timers.length, 1); assert.equal(c.requests.length, 1);
 });
 test('recusa substitui dados antigos e próxima consulta pode recuperar', async () => {
   let fail = false; const w = world();
   const c = client(w, { request: (_id, canal, body) => fail ? Promise.reject(Error('timeout')) : w.call(body, '2', canal) });
   await settle(); fail = true; c.tick(); await settle(); assert.match(content(c), /timeout/);
-  fail = false; c.tick(); await settle(); assert.doesNotMatch(content(c), /timeout/);
+  // **Recuperar é parar de dizer a falha.** Na API 3 o desenho seguinte
+  // substituía o texto; na 4 o aviso já saiu sozinho, e o que se confere é que
+  // a volta boa não diz a falha de novo.
+  const ditosAntes = c.regions.length + c.avisos.length;
+  fail = false; c.tick(); await settle();
+  const novos = [...c.regions.slice(c.regions.length - Math.max(0, c.regions.length + c.avisos.length - ditosAntes)), ...c.avisos.slice(ditosAntes - c.regions.length)];
+  assert.doesNotMatch(JSON.stringify(novos), /timeout/);
 });
 test('resposta do canal anterior não é exibida após navegar', async () => {
   let release; const w = world();
@@ -1115,10 +1168,16 @@ if (manifest.id === 'seele/perfis') {
     assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '<img src=x>', pronouns: 'ela/dela', bio: 'Minha bio', status: 'Presente', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
     const before = JSON.stringify(w.data), c = client(w); await settle();
 
-    // A faixa não lista mais todo mundo: ela tem a porta.
-    const naFaixa = c.controles();
-    assert.ok(naFaixa.has('abrir-diretorio'), 'a faixa não tem porta para o diretório');
-    assert.ok(naFaixa.has('abrir-editor'), 'a faixa não tem porta para o editor');
+    // **A faixa não existe mais.** N2 da validação nativa de 20/09/2026: ela
+    // ocupava a sessão sem nenhuma atividade aberta. O diretório abre pela
+    // entrada de navegação, e o editor pelo cartão da própria pessoa — que é a
+    // apresentação registrada logo abaixo.
+    assert.equal(c.regions.length, 0,
+      'o pacote de API 4 voltou a pintar a faixa permanente: ' + JSON.stringify(c.regions.at(-1)));
+    const apresentacao = c.contribuicoes.find(x => x.ponto === 'pessoa.cartao');
+    assert.ok(apresentacao, 'o MOD não registrou a apresentação das pessoas');
+    assert.ok(apresentacao.acaoPrincipal,
+      'o cartão deixou de ser o caminho até o perfil, e a faixa não está mais lá para ser');
 
     // E a entrada na navegação do servidor existe: é o gesto que U03 pediu.
     const entradas = c.entradas();
@@ -1477,9 +1536,16 @@ if (manifest.id === 'seele/perfis') {
   test('PERFIS: consulta pessoas em lotes de no máximo 32', async () => {
     const c = client(world()); await settle();
     c.snapshot.presentes = Array.from({ length: 70 }, (_, i) => ({ id: i + 1, nickname: 'Mesmo nome' }));
-    c.requests.length = 0; c.tick(); await settle();
+    c.requests.length = 0; c.tick(); await assentar();
     assert.deepEqual(c.requests.map(r => r.body.people.length), [32, 32, 6]);
-    assert.match(content(c), /70 pessoa\(s\)/);
+    // **O que este caso prova é o lote**, e ele está nos pedidos acima. A
+    // contagem aparecia na faixa permanente, que saiu em N2: com todos os MODs
+    // ligados ela tomava quase um terço da janela sem ninguém a ter pedido.
+    // O diretório continua dizendo quantas pessoas ele lista.
+    c.agir('abrir-diretorio');
+    await assentar();
+    const diretorio = JSON.stringify(c.superficie('perfis-diretorio') ?? null);
+    assert.match(diretorio, /70 pessoa\(s\)/, 'avisos=' + JSON.stringify(c.avisos) + ' erros=' + JSON.stringify(c.errors));
   });
 
   // ---- a degradação é explícita, e ela é testada ----
