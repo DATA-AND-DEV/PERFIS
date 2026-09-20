@@ -547,6 +547,10 @@ async function enviarImagem(canal, slot, escolhido) {
   let lidos = 0;
   let indice = 0;
   let enviado = 0;
+  // **`finally`, e não depois do laço** — o mesmo risco que a auditoria de
+  // 20/09/2026 apontou no MESA, e que vale igual aqui: um envio que falha no
+  // meio deixava os bytes presos no produto até a saída da sessão.
+  try {
   for (;;) {
     if (sobra.length < FRAGMENTO && lidos < escolhido.bytes) {
       const pedaco = await SeeleUI.pedaco(escolhido.id, lidos);
@@ -572,9 +576,16 @@ async function enviarImagem(canal, slot, escolhido) {
     indice += 1;
     if (resposta.finished) break;
   }
-  // **Devolvido na hora.** Dez megabytes presos até a saída da sessão seriam
-  // dez megabytes que ninguém mais vai ler.
-  await SeeleUI.soltar(escolhido.id);
+  } finally {
+    // **Devolvido na hora.** Dez megabytes presos até a saída da sessão seriam
+    // dez megabytes que ninguém mais vai ler.
+    try {
+      await SeeleUI.soltar(escolhido.id);
+    } catch (erro) {
+      // Uma falha ao devolver não pode substituir a falha que a trouxe.
+      console.error('PERFIS: o arquivo não foi devolvido: ' + (erro.message || erro));
+    }
+  }
 }
 
 // ------------------------------------------------------------ a região

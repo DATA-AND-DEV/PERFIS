@@ -1023,6 +1023,55 @@ if (manifest.id === 'seele/mesa') {
     assert.equal(c.contribuicoes.length, 0, 'registrou contribuição num SEELE que não as tem');
   });
 
+  // ---- a edição não atravessa a troca de canal ----
+  //
+  // Um dos riscos que a auditoria de 20/09/2026 mandou reproduzir: «Rascunhos e
+  // respostas em voo atravessando mudança de canal […] Prender abertura/edição
+  // à entidade e ao canal de origem.»
+  //
+  // Uma campanha é por canal. Continuar com a ficha `sheet-3` aberta depois de
+  // trocar de canal é ter aberta a ficha de **outra mesa**, com o mesmo número
+  // — e editá-la é escrever na mesa errada.
+  test('MESA: trocar de canal larga o que estava sendo editado', async () => {
+    const w = world();
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle(); await abrirMesa(c);
+
+    // Uma ficha aberta e um nome de cena por escrever.
+    await naAba(c, 'fichas');
+    const abrir = [...naMesa(c).keys()].find(k => k.startsWith('abrir-ficha-'));
+    assert.ok(abrir, 'não há ficha para abrir: ' + oQueAMesaDiz(c));
+    c.fire({ nome: 'botao', chave: abrir });
+    await assentar();
+    assert.match(oQueAMesaDiz(c), /Iria/);
+
+    await naAba(c, 'tabuleiro');
+    c.fire({ nome: 'campo', chave: 'nova-cena', valor: 'Salão desta mesa' });
+    await assentar();
+    assert.equal(naMesa(c).get('nova-cena').valor, 'Salão desta mesa');
+
+    // **O canal 2 tem uma mesa também**, e é isso que torna o caso um caso: com
+    // o canal vazio, os rascunhos não seriam desenhados de qualquer jeito, e o
+    // teste passaria sem medir nada.
+    w.escritaDireta({ op: 'setup', name: 'A Outra', system: 'free', gm: '1' }, '1', 2);
+    w.escritaDireta({ op: 'sheet-create', name: 'Outra ficha', owner: '1' }, '1', 2);
+
+    c.snapshot.open_channel = 2;
+    c.tick();
+    await assentar(20);
+
+    // Chegou na mesa do canal 2.
+    assert.match(oQueAMesaDiz(c), /A Outra/, 'a página não acompanhou a troca de canal');
+
+    // E o que estava sendo editado ficou para trás.
+    assert.doesNotMatch(oQueAMesaDiz(c), /Salão desta mesa/,
+      'o nome de cena de uma mesa apareceu noutro canal');
+    assert.doesNotMatch(oQueAMesaDiz(c), /Iria/,
+      'a ficha de uma mesa continuou aberta noutro canal');
+  });
+
   test('MESA: rolar dados vai ao servidor com a fórmula digitada', async () => {
     const w = world();
     w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
@@ -1345,6 +1394,46 @@ if (manifest.id === 'seele/perfis') {
     c.fire({ nome: 'botao', chave: 'descartar' }); await assentar();
     assert.equal(c.controlesDe('perfis-editor').get('bio').valor, '',
       'confirmar o descarte não apagou');
+  });
+
+  // ---- o arquivo volta mesmo quando o envio falha ----
+  //
+  // Um dos riscos que a auditoria de 20/09/2026 mandou reproduzir: «MESA chama
+  // `soltar` apenas depois do laço bem-sucedido. Verificar liberação em
+  // `finally`.» O mesmo valia aqui.
+  //
+  // Sem ele, um envio que falha no meio — fragmento recusado, revisão trocada,
+  // disco cheio do outro lado — deixava os bytes presos no produto até a saída
+  // da sessão. Dez megabytes segurados por um caminho de erro que ninguém
+  // percorre de propósito.
+  test('PERFIS: um envio que falha no meio devolve o arquivo assim mesmo', async () => {
+    const w = world();
+    let quantos = 0;
+    const c = client(w, {
+      request: (_id, canal, corpo) => {
+        // O primeiro `upload-part` falha. O `upload-start` antes dele passa,
+        // então o envio já começou quando o erro chega — que é o caso.
+        if (corpo.op === 'upload-part') {
+          quantos += 1;
+          if (quantos === 1) return Promise.reject(new Error('disco-cheio'));
+        }
+        return w.call(corpo, '2', canal);
+      },
+    });
+    await settle();
+    c.agir('abrir-editor'); await assentar();
+
+    const png = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'),
+      Buffer.alloc(20000, 3),
+    ]);
+    const id = c.escolher('avatar', png);
+    await assentar(60);
+
+    assert.deepEqual(c.soltos, [id],
+      'o envio falhou e o arquivo ficou preso no produto até a saída da sessão');
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /disco-cheio/,
+      'a falha do envio não chegou a quem apertou');
   });
 
   test('PERFIS: cancelar o seletor é neutro; falhar é dito', async () => {
