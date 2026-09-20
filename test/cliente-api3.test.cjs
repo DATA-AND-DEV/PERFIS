@@ -44,6 +44,8 @@ function world() {
 }
 function client(w, options = {}) {
   const regions = [], themes = [], requests = [], timers = [], errors = [], cartoes = [], pedidosDeCartao = [];
+  // As superfícies de pé, por `id`, e os avisos que passaram pela fila.
+  const superficies = new Map(), avisos = [], contribuicoes = [];
   // Os arquivos que uma pessoa «escolheu», por número — o que o produto
   // guardaria. O MOD nunca os vê inteiros: ele pede pedaços.
   const escolhidos = new Map(), soltos = [];
@@ -80,24 +82,149 @@ function client(w, options = {}) {
       // as recusas aqui são os de `mods-regiao.js` — um MOD que ponha um botão
       // num cartão descobre **no teste dele**, e não numa lista que
       // silenciosamente não mostra o botão.
+      // ---- as superfícies (API 4) ----
+      //
+      // **O mesmo ciclo de vida do produto, com o mesmo teto.** Um MOD que
+      // abra treze superfícies descobre aqui, e não numa janela onde a décima
+      // terceira simplesmente não apareceu.
+      //
+      // Reabrir com o mesmo `id` **não recria**: é o que o produto faz, e um
+      // teste que recriasse esconderia o caso que mais importa — o campo que
+      // continua preenchido ao reabrir.
+      superficies: {
+        criar: async descricao => {
+          const chave = String(descricao?.id ?? '') || 'sem-id';
+          if (!superficies.has(chave)) {
+            if (superficies.size >= 12) {
+              throw new Error('um MOD mantém até 12 superfícies de pé');
+            }
+            superficies.set(chave, {
+              descricao: structuredClone(descricao ?? {}),
+              arvores: [],
+              classes: null,
+              visivel: true,
+              suja: false,
+              titulo: String(descricao?.titulo ?? ''),
+              descartada: false,
+            });
+          }
+          const tela = superficies.get(chave);
+          tela.visivel = true;
+          tela.descartada = false;
+          return {
+            id: chave,
+            montar: async arvore => {
+              checkTree(arvore);
+              tela.arvores.push(structuredClone(arvore));
+            },
+            classes: async mapa => {
+              for (const [, declarado] of Object.entries(mapa ?? {})) {
+                for (const [estado, estilo] of Object.entries(declarado ?? {})) {
+                  if (estado === 'consultas') {
+                    for (const consulta of estilo ?? []) checkEstilo(consulta?.estilo, 'consulta');
+                    continue;
+                  }
+                  checkEstilo(estilo, 'classe');
+                }
+              }
+              tela.classes = structuredClone(mapa ?? {});
+            },
+            mostrar: async () => { tela.visivel = true; },
+            ocultar: async () => { tela.visivel = false; },
+            suja: async valor => { tela.suja = valor !== false; },
+            titulo: async t => { tela.titulo = String(t ?? ''); },
+            fechar: async () => { tela.visivel = false; },
+            descartar: async () => { tela.descartada = true; superficies.delete(chave); },
+          };
+        },
+        avisar: async (mensagem, tom) => {
+          avisos.push({ mensagem: String(mensagem ?? ''), tom: tom ?? 'normal' });
+          return { superficie: 'aviso', reaproveitada: false };
+        },
+      },
+
+      // ---- as contribuições (API 4) ----
+      //
+      // Os pontos e os modos são os de `mods-contribuicoes.js`. Um MOD que
+      // peça um ponto que não existe descobre aqui, com a lista dos que
+      // existem — que é o que o produto também responde.
+      contribuicoes: {
+        registrar: async pedido => {
+          const PONTOS = {
+            'pessoa.identidade': ['substituir', 'decorar'],
+            'pessoa.cartao': ['substituir', 'adicionar'],
+            'pessoa.detalhes': ['adicionar'],
+            'pessoa.acoes': ['adicionar'],
+            'canal.item': ['decorar', 'adicionar'],
+            'canal.cabecalho': ['adicionar'],
+            'compositor.ferramentas': ['adicionar'],
+            'sala.acoes': ['adicionar'],
+            'servidor.navegacao': ['adicionar'],
+            'servidor.aparencia': ['substituir'],
+          };
+          const ponto = String(pedido?.ponto ?? '');
+          const modos = PONTOS[ponto];
+          if (!modos) {
+            throw new Error('a API de MODs não conhece o ponto «' + ponto
+              + '»; os que existem são ' + Object.keys(PONTOS).join(', '));
+          }
+          const modo = String(pedido?.modo ?? 'adicionar');
+          if (!modos.includes(modo)) {
+            throw new Error('«' + ponto + '» aceita ' + modos.join(' ou ') + ', e veio «' + modo + '»');
+          }
+          if (contribuicoes.length >= 128) {
+            throw new Error('um MOD mantém até 128 contribuições de pé');
+          }
+          const handle = 'c' + (contribuicoes.length + 1);
+          contribuicoes.push({ handle, ...structuredClone(pedido) });
+          return { handle };
+        },
+        revogar: async handle => {
+          const onde = contribuicoes.findIndex(c => c.handle === handle);
+          if (onde < 0) return false;
+          contribuicoes.splice(onde, 1);
+          return true;
+        },
+      },
+
       cartoes: async pedidos => {
         const entradas = Object.entries(pedidos ?? {});
         if (entradas.length > 64) throw new Error('um MOD dá cartão a até 64 pessoas, e vieram ' + entradas.length);
-        const DENTRO = new Set(['texto', 'titulo', 'linha', 'lista', 'item', 'midia']);
+        // **A gramática do cartão, e o que continua de fora dela.**
+        //
+        // Ela cresceu com a API 4 — composição e apresentação de pessoa
+        // entraram, porque U27 pediu que o cartão pudesse **substituir** a
+        // identidade. O que não mudou é a razão de a lista existir: a linha do
+        // roster já tem um botão do produto, e nada que receba foco entra aqui.
+        //
+        // Os mesmos nomes de `PERFIS_DE_RENDER.cartao.formas` no produto. Um
+        // MOD que ponha um botão num cartão descobre **no teste dele**, e não
+        // numa lista que silenciosamente não o mostra.
+        const DENTRO = new Set([
+          'texto', 'titulo', 'linha', 'lista', 'item', 'midia',
+          'caixa', 'pilha', 'grade', 'separador', 'espaco',
+          'retrato', 'distintivo',
+        ]);
         const montados = {};
         let recusados = 0;
+        let nos = 0;
         const andar = (no, fundura) => {
-          if (fundura > 4 || no == null) return [];
+          if (fundura > 6 || no == null) return [];
           if (Array.isArray(no)) return no.flatMap(um => andar(um, fundura));
-          if (typeof no === 'string') return [{ texto: no }];
+          if (typeof no === 'string') { nos += 1; return [{ texto: no }]; }
           if (typeof no !== 'object' || !no.forma) return [];
           if (!DENTRO.has(no.forma)) { recusados += 1; return []; }
+          nos += 1;
+          checkEstilo(no.estilo, 'cartão/' + no.forma);
           return [{ ...no, dentro: andar(no.dentro, fundura + 1) }];
         };
         for (const [pessoa, declaracao] of entradas) {
+          nos = 0;
           const partes = andar(declaracao, 0);
           if (!partes.length) continue;
-          if (partes.length > 24) throw new Error('um cartão cabe em 24 nós');
+          // Os mesmos 64 nós de `LIMITES_DO_CARTAO`, contados em todos os
+          // níveis: contar só a raiz deixaria passar uma árvore funda.
+          if (nos > 64) throw new Error('um cartão cabe em 64 nós, e vieram ' + nos);
           montados[String(pessoa)] = partes;
         }
         cartoes.length = 0;
@@ -109,9 +236,36 @@ function client(w, options = {}) {
     },
   });
   let listener = null;
+  // **Um SEELE de API 3 não tem superfícies nem contribuições**, e a diferença
+  // é ausência e não recusa: o prelúdio monta um `SeeleUI` em que os dois
+  // simplesmente não estão. Reproduzir isso aqui é o que permite a um MOD
+  // provar que degrada em vez de falhar — e é o único jeito de testar a
+  // compatibilidade que `APIS_ACEITAS` promete.
+  if (options.semApi4) {
+    delete sandbox.SeeleUI.superficies;
+    delete sandbox.SeeleUI.contribuicoes;
+  }
   vm.runInContext(source, sandbox, { timeout: 1000 });
   return {
-    regions, themes, requests, timers, errors, snapshot,
+    regions, themes, requests, timers, errors, snapshot, avisos, contribuicoes,
+    /** As superfícies de pé, por `id`. */
+    superficies,
+    /** A última árvore que o MOD montou numa superfície. */
+    superficie: chave => superficies.get(String(chave))?.arvores.at(-1) ?? null,
+    /** Os controles de uma superfície, pela chave — como `controles()` na região. */
+    controlesDe: chave => {
+      const achados = new Map();
+      const andar = no => {
+        if (!no || typeof no !== 'object') return;
+        if (Array.isArray(no)) { no.forEach(andar); return; }
+        if (no.chave) achados.set(no.chave, no);
+        andar(no.dentro);
+      };
+      andar(superficies.get(String(chave))?.arvores.at(-1));
+      return achados;
+    },
+    /** As entradas de navegação que o MOD registrou. */
+    entradas: () => contribuicoes.filter(c => c.ponto === 'servidor.navegacao'),
     /** Os cartões que o produto montou na lista de pessoas, por último. */
     cartoes: () => cartoes.at(-1) ?? {},
     /** O que o MOD **pediu**, antes da regra do produto. */
@@ -120,6 +274,17 @@ function client(w, options = {}) {
     // O que a pessoa fez. Quem monta o elemento é o produto, então o teste
     // manda o **evento** dele, e não um clique num DOM que não existe aqui.
     fire: evento => { assert.ok(listener, 'o MOD não registrou ouvinte de evento'); listener(evento); },
+    /**
+     * O que o produto manda quando alguém aperta uma apresentação de MOD.
+     *
+     * O `id` da pessoa é o que o **produto** escreveu no alvo, e não nada que
+     * o MOD tenha desenhado: é a diferença entre apresentar uma identidade e
+     * afirmar uma, e o teste a reproduz para não haver dois contratos.
+     */
+    agir: (acao, pessoa = '', canal = '') => {
+      assert.ok(listener, 'o MOD não registrou ouvinte de evento');
+      listener({ nome: 'acao', acao, pessoa: String(pessoa), canal: String(canal) });
+    },
     escolhidos, soltos,
     /** Simula o que a pessoa escolheu no seletor do sistema. */
     escolher: (chave, bytes, tipo = 'image/png') => {
@@ -146,37 +311,111 @@ function client(w, options = {}) {
 // As chaves que cada forma da API 3 aceita. Escritas aqui para um MOD que
 // invente um campo descobrir **no teste dele**, e não numa região que o produto
 // monta sem aquele campo e sem dizer por quê.
+// **Toda forma aceita `estilo`, `classe` e `nomeAcessivel`.** Eles não são de
+// nenhuma forma em particular: são o que a API 4 acrescentou a todas.
+const CHAVES_DE_TODA_FORMA = ['estilo', 'classe', 'nomeAcessivel', 'chave'];
+
 const CHAVES_DA_FORMA = {
+  // ---- API 3 ----
   titulo: ['dentro'], texto: ['dentro'], linha: ['dentro'],
   lista: ['dentro'], item: ['dentro'],
-  campo: ['chave', 'rotulo', 'valor'],
+  campo: ['chave', 'rotulo', 'valor', 'erro'],
   escolha: ['chave', 'rotulo', 'valor', 'opcoes'],
-  botao: ['chave', 'dentro', 'desligado'],
+  botao: ['chave', 'dentro', 'desligado', 'variante', 'emProgresso', 'porqueIndisponivel'],
   // `finalidade`, `tipos` e `limiteDeBytes` chegaram com o conserto de U21/U22:
   // o botão de arquivo não tinha nome acessível nenhum, e o seletor do sistema
   // abria dizendo «Escolha um arquivo para este MOD» com JSONs na lista.
   arquivo: ['chave', 'dentro', 'rotulo', 'desligado', 'finalidade', 'tipos', 'limiteDeBytes'],
   tela: ['chave', 'largura', 'altura', 'figuras', 'tracos'],
   midia: ['chave', 'fonte', 'doServidor', 'descricao', 'tocando'],
+  // ---- API 4: composição ----
+  caixa: ['dentro'], pilha: ['dentro'], grade: ['dentro'], rolagem: ['dentro'],
+  separador: [], espaco: [],
+  // ---- API 4: controle ----
+  formulario: ['chave', 'dentro', 'erro'],
+  acoes: ['dentro', 'fixas'],
+  abas: ['chave', 'valor', 'dentro'],
+  aba: ['chave', 'rotulo', 'dentro'],
+  textoLongo: ['chave', 'rotulo', 'valor', 'linhas', 'sugestao', 'erro'],
+  numero: ['chave', 'rotulo', 'valor', 'minimo', 'maximo', 'passo', 'erro'],
+  deslizante: ['chave', 'rotulo', 'valor', 'minimo', 'maximo', 'passo'],
+  marca: ['chave', 'rotulo', 'valor', 'desligado'],
+  interruptor: ['chave', 'rotulo', 'valor', 'desligado'],
+  cor: ['chave', 'rotulo', 'valor'],
+  // ---- API 4: apresentação ----
+  retrato: ['chave', 'inicial', 'formato', 'descricao', 'fonte', 'doServidor'],
+  distintivo: ['dentro'],
+  link: ['chave', 'dentro', 'endereco', 'desligado'],
 };
+
+/**
+ * As propriedades de estilo que `mods-estilos.js` reconhece.
+ *
+ * Escritas aqui pela mesma razão que as formas: um MOD que escreva `corDeFundo`
+ * em vez de `fundo` descobre **no teste dele**, e não numa tela em que a cor
+ * simplesmente não aparece. O produto conta a recusa e a devolve como erro; o
+ * teste a transforma numa falha com o nome da propriedade.
+ */
+const PROPRIEDADES_DE_ESTILO = new Set([
+  'cor', 'fundo', 'gradiente', 'opacidade',
+  'raio', 'borda', 'sombra',
+  'familia', 'peso', 'corpo', 'entrelinha', 'espacamento', 'alinhamento', 'transformar',
+  'direcao', 'alinhar', 'distribuir', 'quebra', 'crescer', 'encolher',
+  'intervalo', 'preenchimento', 'margem',
+  'largura', 'altura', 'larguraMinima', 'larguraMaxima', 'alturaMinima', 'alturaMaxima',
+  'colunas', 'posicao', 'recortar', 'proporcao',
+  'girar', 'escalar', 'mover', 'transicao', 'animacao',
+]);
+
+function checkEstilo(estilo, onde) {
+  if (estilo === null || estilo === undefined) return;
+  assert.equal(typeof estilo, 'object', `o estilo de «${onde}» não é um objeto`);
+  for (const chave of Object.keys(estilo)) {
+    assert.ok(
+      PROPRIEDADES_DE_ESTILO.has(chave),
+      `«${chave}» não é uma propriedade de estilo que o SEELE reconhece (em «${onde}»)`,
+    );
+  }
+}
+
 function checkTree(tree, depth = 0) {
-  assert.ok(depth <= 8, 'o renderer do produto cortaria este conteúdo');
+  // O teto da superfície, que é o maior dos três perfis do produto.
+  assert.ok(depth <= 16, 'o renderer do produto cortaria este conteúdo');
   if (tree === null || tree === undefined) return;
   if (typeof tree === 'string') return;
-  if (Array.isArray(tree)) { tree.forEach(n => checkTree(n, depth + 1)); return; }
+  // **Um vetor não é um nível.** `planejar`, no produto, percorre um vetor com
+  // a mesma fundura — ele é uma lista de irmãos, e não um nó. Contá-lo aqui
+  // fazia o laboratório recusar árvores que o produto monta sem reclamar, e o
+  // MOD via «o renderer do produto cortaria este conteúdo» num lugar onde o
+  // renderer não corta nada. Um laboratório que discorda do produto é pior que
+  // nenhum: ele ensina a coisa errada.
+  if (Array.isArray(tree)) { tree.forEach(n => checkTree(n, depth)); return; }
   const aceitas = CHAVES_DA_FORMA[tree.forma];
-  assert.ok(aceitas, 'forma que a API 3 não conhece: ' + tree.forma);
+  assert.ok(aceitas, 'forma que a API do SEELE não conhece: ' + tree.forma);
   for (const chave of Object.keys(tree)) {
     if (chave === 'forma') continue;
+    if (chave === 'estilo') { checkEstilo(tree.estilo, tree.forma); continue; }
+    if (CHAVES_DE_TODA_FORMA.includes(chave)) continue;
     assert.ok(aceitas.includes(chave), `«${chave}» não existe em «${tree.forma}»`);
   }
   if ('dentro' in tree) checkTree(tree.dentro, depth + 1);
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
+/**
+ * Espera várias voltas de microtarefa.
+ *
+ * Abrir uma superfície são quatro idas à ponte — criar, classes, montar,
+ * mostrar —, e cada uma é uma promessa. Um `settle()` só assenta a primeira, e
+ * um teste que olhasse ali veria a superfície criada e vazia. O nome diz o que
+ * se está esperando, para ninguém voltar a contar `await settle()` na mão.
+ */
+const assentar = async (voltas = 12) => { for (let i = 0; i < voltas; i += 1) await settle(); };
 const content = c => JSON.stringify(c.regions.at(-1));
-test('API 3: cliente final executa sem DOM e só consulta o próprio servidor', async () => {
+test('o cliente final executa sem DOM e só consulta o próprio servidor', async () => {
   const c = client(world()); await settle();
-  assert.equal(manifest.api, 3); assert.ok(c.regions.length); assert.equal(c.errors.length, 0);
+  // O pacote declara uma API que este SEELE executa — ver `APIS_ACEITAS`.
+  assert.ok([3, 4].includes(manifest.api), 'manifesto declara API ' + manifest.api);
+  assert.ok(c.regions.length); assert.equal(c.errors.length, 0);
   assert.ok(c.requests.length); assert.ok(c.requests.every(r => r.id === manifest.id && r.body.op === 'view'));
   assert.equal(c.timers.length, 1);
 });
@@ -676,32 +915,69 @@ if (manifest.id === 'seele/mesa') {
   });
 }
 if (manifest.id === 'seele/perfis') {
-  test('PERFIS: a lista traz cada pessoa por ID, e abrir mostra a ficha dela', async () => {
-    const w = world(); assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '<img src=x>', pronouns: 'ela/dela', bio: 'Minha bio', status: 'Presente', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
-    const before = JSON.stringify(w.data), c = client(w); await settle();
-    // A lista: nome e ID de cada um, e o botão que abre.
-    assert.match(content(c), /<img src=x>/); assert.match(content(c), /ID 2/);
-    assert.equal(JSON.stringify(w.data), before);
-
-    // Abrir a ficha **não** vai ao servidor: o retrato já está na mão.
-    const antes = c.requests.length;
-    c.fire({ nome: 'botao', chave: 'abrir-1' }); await settle();
-    assert.equal(c.requests.length, antes, 'abrir uma ficha foi ao servidor');
-    assert.match(content(c), /ID 1/);
-
-    // E a minha traz os campos editáveis.
-    c.fire({ nome: 'botao', chave: 'fechar' }); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
-    const controles = c.controles();
-    assert.ok(controles.has('bio'), 'a minha ficha não trouxe o campo de bio');
-    assert.equal(controles.get('bio').valor, 'Minha bio');
-    assert.ok(controles.has('effect'), 'a minha ficha não trouxe a escolha de efeito');
-    assert.equal(JSON.stringify(w.data), before, 'abrir a ficha escreveu no servidor');
-  });
-  test('PERFIS: o cartão de quem escreveu algo aparece na lista do produto', async () => {
+  // ---- a faixa deixou de ser tudo (U01, U20) ----
+  //
+  // A auditoria de 20/09/2026 mediu que editar um perfil exigia «rolar um
+  // rodapé» de 240px, com «Sobre mim» num input de uma linha. A faixa agora
+  // carrega o que cabe numa linha — quem você é, e a porta para o resto —, e a
+  // atividade acontece numa superfície própria.
+  test('PERFIS: a faixa vira uma linha, e o diretório é uma página', async () => {
     const w = world();
-    // Duas pessoas: uma escreveu perfil, a outra não escreveu nada.
-    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia da Torre', pronouns: 'ela/dela', status: 'jogando', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '<img src=x>', pronouns: 'ela/dela', bio: 'Minha bio', status: 'Presente', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
+    const before = JSON.stringify(w.data), c = client(w); await settle();
+
+    // A faixa não lista mais todo mundo: ela tem a porta.
+    const naFaixa = c.controles();
+    assert.ok(naFaixa.has('abrir-diretorio'), 'a faixa não tem porta para o diretório');
+    assert.ok(naFaixa.has('abrir-editor'), 'a faixa não tem porta para o editor');
+
+    // E a entrada na navegação do servidor existe: é o gesto que U03 pediu.
+    const entradas = c.entradas();
+    assert.equal(entradas.length, 1, 'o MOD não registrou entrada de navegação');
+    assert.equal(entradas[0].rotulo, 'Perfis');
+
+    // Abrir o diretório **não** vai ao servidor: os perfis já estão na mão.
+    const antes = c.requests.length;
+    c.agir('abrir-diretorio'); await assentar();
+    assert.equal(c.requests.length, antes, 'abrir o diretório foi ao servidor');
+    const diretorio = JSON.stringify(c.superficie('perfis-diretorio'));
+    assert.ok(diretorio, 'o diretório não foi montado numa superfície');
+    assert.match(diretorio, /<img src=x>/);
+    assert.equal(JSON.stringify(w.data), before, 'abrir o diretório escreveu no servidor');
+  });
+
+  test('PERFIS: o editor é um diálogo, com bio multilinha, cor e prévia', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.agir('abrir-editor'); await assentar();
+
+    const controles = c.controlesDe('perfis-editor');
+    assert.ok(controles.size, 'o editor não abriu numa superfície');
+
+    // U20: «"Sobre mim" é input de uma linha.» Agora é `textoLongo`.
+    assert.equal(controles.get('bio')?.forma, 'textoLongo',
+      'a biografia voltou a ser um campo de uma linha');
+    // U23 pediu seletor de cor para o ESTILO; a mesma razão vale aqui.
+    assert.equal(controles.get('accent')?.forma, 'cor',
+      'a cor voltou a ser um campo de texto hexadecimal');
+
+    // A prévia existe, e ela usa o **mesmo** desenho do cartão: duas funções
+    // de desenho seriam duas verdades sobre o mesmo cartão.
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /PRÉVIA/);
+
+    // E o diálogo é um diálogo de verdade: ele pede confirmação ao fechar com
+    // alteração pendente, em vez de descartar em silêncio.
+    const tela = c.superficies.get('perfis-editor');
+    assert.equal(tela.descricao.fecharComAlteracoes, 'confirmar');
+    assert.equal(tela.suja, false, 'nasceu suja sem ninguém ter editado');
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Escrito agora.' });
+    await assentar();
+    assert.equal(tela.suja, true, 'editar não marcou o diálogo como sujo');
+  });
+
+  test('PERFIS: o cartão apresenta a identidade — retrato, cor e efeito', async () => {
+    const w = world();
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia da Torre', pronouns: 'ela/dela', status: 'jogando', bio: '', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
     const c = client(w); await settle();
 
     const cartoes = c.cartoes();
@@ -712,58 +988,71 @@ if (manifest.id === 'seele/perfis') {
     assert.match(textos, /ela\/dela/, 'o pronome não entrou: ' + textos);
     assert.match(textos, /jogando/, 'o status não entrou: ' + textos);
 
+    // **U27 pelo nome.** A cor e o efeito eram lidos e gravados e não apareciam
+    // em lugar nenhum da árvore visual. Agora a cor é a borda do retrato e o
+    // efeito é a animação dele.
+    assert.match(textos, /#a78bfa/, 'a cor escolhida continua sem aparecer: ' + textos);
+    assert.match(textos, /"animacao"/, 'o efeito escolhido continua sem aparecer: ' + textos);
+    assert.ok(meu.some(() => true) && textos.includes('"retrato"'),
+      'o cartão não tem retrato: ' + textos);
+
     // **Quem não escreveu nada não ganha cartão.** Uma moldura vazia ao lado
     // de um nome é o produto anunciando uma ausência que ninguém pediu.
     assert.equal(cartoes['1'], undefined, 'quem não tem perfil ganhou um cartão vazio');
-    // E o MOD **não pede** um cartão para essa pessoa: olhar só o resultado
-    // não provaria nada, porque o produto já descarta declaração vazia.
     assert.equal(c.cartoesPedidos()['1'], undefined, 'o MOD pediu cartão para quem não escreveu nada');
   });
 
-  test('PERFIS: o cartão é declaração, e nada dentro dele recebe clique', async () => {
+  test('PERFIS: o cartão substitui a apresentação, e o clique é do produto', async () => {
     const w = world();
     assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
 
-    // **Nada que receba foco ou clique.** A linha do roster já tem um botão do
-    // produto, e dividir foco e área de toque com um terceiro é o tipo de
-    // coisa que ninguém consegue depurar depois.
+    // A substituição é registrada como contribuição, e não adivinhada pelo
+    // produto a partir de haver cartão.
+    const cartao = c.contribuicoes.find(x => x.ponto === 'pessoa.cartao');
+    assert.ok(cartao, 'o MOD não registrou a substituição do cartão');
+    assert.equal(cartao.modo, 'substituir');
+    assert.ok(cartao.acaoPrincipal, 'o cartão ficou sem ação de clique');
+
+    // **Nada que receba foco ou clique dentro dele.** A linha do roster já tem
+    // um botão do produto; o clique do cartão é montado em volta da
+    // declaração, pelo produto, ligado ao ID real.
     const pedido = JSON.stringify(c.cartoesPedidos());
-    for (const proibida of ['"botao"', '"campo"', '"escolha"', '"arquivo"', '"tela"']) {
+    for (const proibida of ['"botao"', '"campo"', '"escolha"', '"arquivo"', '"tela"', '"link"']) {
       assert.ok(!pedido.includes(proibida), `o cartão declarou ${proibida}: ` + pedido);
     }
-    // E nenhuma medida: o tamanho é do produto.
-    for (const medida of ['largura', 'altura', 'cor', 'estilo']) {
-      assert.ok(!pedido.includes('"' + medida + '"'), `o cartão tentou escolher ${medida}: ` + pedido);
-    }
-    // **O nome exibido igual ao apelido não vira título**: a linha do roster já
-    // escreve um nome, e dois nomes iguais na mesma linha é a linha dizendo
-    // duas vezes a mesma coisa. A pessoa 2 se chama «Lia» no retrato, e foi
-    // «Lia» que ela pôs no perfil.
-    assert.equal(c.snapshot.presentes.find(p => p.id === 2).nickname, 'Lia', 'o retrato mudou de apelido');
-    const partes = c.cartoesPedidos()['2'] ?? [];
-    assert.ok(!partes.some(parte => parte.forma === 'titulo'), 'o nome repetido virou título: ' + JSON.stringify(partes));
-    assert.ok(partes.some(parte => parte.chave === 'pronome'), 'e o cartão ficou sem o que ele tem a dizer: ' + JSON.stringify(partes));
+
+    // E o clique chega com o ID que o produto escreveu, não com o texto do MOD.
+    c.agir(cartao.acaoPrincipal, '1'); await assentar();
+    assert.ok(c.superficie('perfis-detalhes'), 'clicar no cartão de outra pessoa não abriu o perfil dela');
+    assert.match(JSON.stringify(c.superficie('perfis-detalhes')), /ID 1/);
+  });
+
+  test('PERFIS: clicar no próprio cartão abre o editor, e não a leitura', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.agir('abrir-perfil', '2'); await assentar();
+    assert.ok(c.superficie('perfis-editor'), 'o próprio cartão abriu a leitura em vez do editor');
   });
 
   test('PERFIS: o retrato do cartão vem do servidor deste MOD, e nunca de um endereço', async () => {
     const w = world();
     assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'elu/delu', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
-    // Sem retrato guardado, o cartão não declara mídia nenhuma.
+    // Sem retrato guardado, o cartão traz a inicial e nenhuma origem de bytes.
     let c = client(w); await settle();
-    assert.ok(!JSON.stringify(c.cartoesPedidos()).includes('midia'), 'declarou retrato sem haver retrato');
+    assert.ok(!JSON.stringify(c.cartoesPedidos()).includes('doServidor'),
+      'declarou origem de bytes sem haver retrato');
 
     // Com retrato, ele vem por `doServidor` — a única origem que a API aceita.
     const store = JSON.parse(w.data.profiles);
     store['2'].avatar = 'perfis/2/avatar';
     w.data.profiles = JSON.stringify(store);
     c = client(w); await settle();
-    const midia = (c.cartoesPedidos()['2'] ?? []).find(parte => parte.forma === 'midia');
-    assert.ok(midia, 'o retrato não entrou no cartão: ' + JSON.stringify(c.cartoesPedidos()));
-    assert.ok(midia.doServidor, 'o retrato não veio do servidor deste MOD');
-    assert.equal(midia.doServidor.pedido.op, 'asset');
-    assert.equal(midia.doServidor.pedido.slot, 'avatar');
-    assert.ok(!('fonte' in midia) && !('url' in midia) && !('src' in midia), 'o retrato ganhou uma segunda origem: ' + JSON.stringify(midia));
+    const pedido = JSON.stringify(c.cartoesPedidos()['2'] ?? []);
+    assert.match(pedido, /"doServidor"/, 'o retrato não entrou no cartão: ' + pedido);
+    assert.match(pedido, /"slot":"avatar"/);
+    assert.ok(!pedido.includes('"fonte"') && !pedido.includes('"url"'),
+      'o retrato ganhou uma segunda origem: ' + pedido);
   });
 
   test('PERFIS: sair do canal tira os cartões da lista', async () => {
@@ -782,25 +1071,48 @@ if (manifest.id === 'seele/perfis') {
   test('PERFIS: editar e gravar muda o perfil, e a recusa do servidor é dita', async () => {
     const w = world();
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    c.agir('abrir-editor'); await assentar();
     c.fire({ nome: 'campo', chave: 'displayName', valor: 'Lia' });
     c.fire({ nome: 'campo', chave: 'bio', valor: 'Joga de longe.' });
     c.fire({ nome: 'escolha', chave: 'effect', valor: 'sparkle' });
-    await settle();
-    assert.equal(c.controles().get('displayName').valor, 'Lia');
-    assert.equal(c.controles().get('gravar').desligado, false);
+    await assentar();
+    assert.equal(c.controlesDe('perfis-editor').get('displayName').valor, 'Lia');
+    assert.equal(c.controlesDe('perfis-editor').get('gravar').desligado, false);
 
-    c.fire({ nome: 'botao', chave: 'gravar' }); await settle(); await settle();
+    c.fire({ nome: 'botao', chave: 'gravar' });
+    await assentar(20);
     const salvo = w.call({ op: 'view', people: ['2'] }, '2').profiles['2'];
     assert.equal(salvo.displayName, 'Lia');
     assert.equal(salvo.effect, 'sparkle');
 
-    // Uma cor que o servidor não aceita é recusada, e a recusa vira frase.
-    c.fire({ nome: 'campo', chave: 'accent', valor: 'roxo' }); await settle();
-    c.fire({ nome: 'botao', chave: 'gravar' }); await settle(); await settle();
-    assert.match(content(c), /[Ee]feito ou cor/);
-    assert.equal(c.controles().get('accent').valor, 'roxo', 'o que foi digitado sumiu com a recusa');
+    // ---- a recusa do servidor não pode custar o que foi escrito ----
+    //
+    // **A cor inválida deixou de chegar ao servidor**, e isso é o conserto de
+    // U23 funcionando: o controle é um seletor, e um seletor não produz
+    // «roxo». O que ainda chega são as recusas que só o servidor conhece —
+    // revisão trocada, permissão, limite —, e é essa que este caso exercita.
+    //
+    // O que importa é o mesmo de antes: a frase aparece onde a pessoa apertou,
+    // e o rascunho continua no formulário para ser corrigido.
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Um texto que vale a pena não perder.' });
+    await assentar();
+    // Outra janela gravou no meio: a revisão que este lado tem ficou velha.
+    assert.equal(w.escritaDireta({
+      op: 'save', revision: 1,
+      profile: { displayName: 'Outra', pronouns: '', bio: '', status: '', accent: '#a78bfa', effect: 'none' },
+    }, '2').ok, true);
+    c.fire({ nome: 'botao', chave: 'gravar' });
+    await assentar(20);
+    const dito = JSON.stringify(c.superficie('perfis-editor'));
+    assert.match(dito, /outra janela/i,
+      'a recusa do servidor não chegou a quem editava: ' + dito);
+    assert.equal(
+      c.controlesDe('perfis-editor').get('bio').valor,
+      'Um texto que vale a pena não perder.',
+      'o que foi escrito sumiu com a recusa',
+    );
   });
+
   test('PERFIS: a imagem vem do servidor deste MOD, e nunca de um endereço', async () => {
     const w = world();
     // Um PNG mínimo, pelo caminho de sempre do servidor: `upload-start` e um
@@ -812,20 +1124,19 @@ if (manifest.id === 'seele/perfis') {
     assert.equal(parte.ok, true, parte.error);
     assert.equal(parte.finished, true, 'o upload do vetor não completou');
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
-    const midia = [...c.controles().values()].find(n => n.forma === 'midia');
-    assert.ok(midia, 'a ficha não montou a imagem');
-    assert.ok(midia.doServidor, 'a imagem não veio da metade de servidor deste MOD');
-    assert.equal(midia.doServidor.pedido.op, 'asset');
-    assert.equal(midia.doServidor.campo, 'image');
+    c.agir('abrir-perfil', '2'); await assentar();
+    const arvore = JSON.stringify(c.superficie('perfis-editor'));
+    assert.match(arvore, /"doServidor"/, 'a ficha não montou a imagem do servidor');
+    assert.match(arvore, /"op":"asset"/);
     // Nenhuma forma da API carrega endereço, e é isso que impede a janela de
     // quem conversa de buscar bytes na rede de um estranho.
-    assert.doesNotMatch(content(c), /https?:/);
+    assert.doesNotMatch(arvore, /https?:/);
   });
+
   test('PERFIS: a pessoa escolhe uma imagem e ela chega inteira ao servidor', async () => {
     const w = world();
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    c.agir('abrir-editor'); await assentar();
 
     // Um PNG de verdade, maior que um fragmento e que um pedaço do produto:
     // é o único jeito de provar que a junção dos pedaços não perde nada.
@@ -834,7 +1145,7 @@ if (manifest.id === 'seele/perfis') {
       Buffer.alloc(70000, 7),
     ]);
     const id = c.escolher('avatar', png);
-    for (let i = 0; i < 80; i++) await settle();
+    for (let i = 0; i < 120; i++) await settle();
 
     const perfil = w.call({ op: 'view', people: ['2'] }, '2').profiles['2'];
     assert.ok(perfil.avatar, 'o retrato não foi publicado: ' + content(c));
@@ -852,63 +1163,61 @@ if (manifest.id === 'seele/perfis') {
     // **Devolvido na hora**, sem esperar a saída da sessão.
     assert.deepEqual(c.soltos, [id], 'o arquivo escolhido não foi devolvido');
   });
-  // **Cancelar é uma resposta, e agora é uma resposta com nome.**
-  //
-  // Antes, fechar o seletor e o seletor falhar chegavam iguais — os dois como
-  // `arquivo: null` — e o MOD respondia aos dois com o mesmo aviso. A auditoria
-  // de 20/09/2026 pediu «cancelamento neutro e silencioso quando apropriado»,
-  // e isso só é possível quando o MOD consegue distinguir os dois casos:
-  // `resultado` é o campo que os separa.
+
   // ---- o rascunho pertence à pessoa, e não ao momento (U26) ----
   //
   // `FECHAR` apagava `rascunho`. Quem escrevesse a biografia e fechasse a
   // ficha — de propósito ou sem querer — perdia o que escreveu, em silêncio.
   // O conserto amarra o rascunho à entidade: fechar guarda, e só `DESCARTAR`
   // — explícito e confirmado — joga fora.
-  test('PERFIS: fechar a ficha não apaga o que foi escrito; descartar pede confirmação', async () => {
+  test('PERFIS: fechar o editor não apaga o que foi escrito; descartar pede confirmação', async () => {
     const w = world();
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    c.agir('abrir-editor'); await assentar();
 
     c.fire({ nome: 'campo', chave: 'bio', valor: 'Uma biografia longa que custou a ser escrita.' });
-    await settle();
-    assert.equal(c.controles().get('bio').valor, 'Uma biografia longa que custou a ser escrita.');
+    await assentar();
+    assert.equal(c.controlesDe('perfis-editor').get('bio').valor,
+      'Uma biografia longa que custou a ser escrita.');
 
-    // Fecha e reabre: o que estava escrito continua lá.
-    c.fire({ nome: 'botao', chave: 'fechar' }); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    // Fecha e reabre: o que estava escrito continua lá. Quem fecha é o host —
+    // pelo botão que **ele** monta —, e o MOD é avisado.
+    c.fire({ nome: 'fechar', superficie: 'perfis-editor', porque: 'saida-do-produto' });
+    await assentar();
+    c.agir('abrir-editor'); await assentar();
     assert.equal(
-      c.controles().get('bio').valor,
+      c.controlesDe('perfis-editor').get('bio').valor,
       'Uma biografia longa que custou a ser escrita.',
-      'fechar a ficha apagou o que tinha sido escrito e não gravado',
+      'fechar o editor apagou o que tinha sido escrito e não gravado',
     );
 
     // E descartar não joga fora no primeiro toque: ele pergunta.
-    c.fire({ nome: 'botao', chave: 'descartar' }); await settle();
-    assert.match(content(c), /Aperte DESCARTAR de novo/,
+    c.fire({ nome: 'botao', chave: 'descartar' }); await assentar();
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Aperte de novo para confirmar/,
       'descartar apagou sem perguntar');
     assert.equal(
-      c.controles().get('bio').valor,
+      c.controlesDe('perfis-editor').get('bio').valor,
       'Uma biografia longa que custou a ser escrita.',
       'o primeiro DESCARTAR já apagou o rascunho',
     );
 
     // No segundo, sim.
-    c.fire({ nome: 'botao', chave: 'descartar' }); await settle();
-    assert.equal(c.controles().get('bio').valor, '', 'confirmar o descarte não apagou');
+    c.fire({ nome: 'botao', chave: 'descartar' }); await assentar();
+    assert.equal(c.controlesDe('perfis-editor').get('bio').valor, '',
+      'confirmar o descarte não apagou');
   });
 
   test('PERFIS: cancelar o seletor é neutro; falhar é dito', async () => {
     const w = world();
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    c.agir('abrir-editor'); await assentar();
     const antes = c.requests.length;
 
     // Cancelou: não vai ao servidor e não acusa nada na tela.
     c.fire({ nome: 'arquivo', chave: 'avatar', arquivo: null, resultado: 'cancelado' });
-    await settle();
+    await assentar();
     assert.equal(c.requests.length, antes, 'cancelar foi ao servidor');
-    assert.doesNotMatch(content(c), /nenhum arquivo escolhido/,
+    assert.doesNotMatch(JSON.stringify(c.superficie('perfis-editor')), /nenhum arquivo escolhido/,
       'cancelar continua deixando um aviso onde não há nada errado');
 
     // Falhou: o motivo do produto aparece onde a pessoa apertou.
@@ -916,30 +1225,44 @@ if (manifest.id === 'seele/perfis') {
       nome: 'arquivo', chave: 'avatar', arquivo: null,
       resultado: 'falhou', porque: 'papel-nao-serve:som',
     });
-    await settle();
+    await assentar();
     assert.equal(c.requests.length, antes, 'uma falha foi ao servidor');
-    assert.match(content(c), /papel-nao-serve:som/,
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /papel-nao-serve:som/,
       'a falha do seletor não chegou a quem apertou');
   });
+
   test('PERFIS: um som escolhido no lugar de uma imagem é recusado pelo nome', async () => {
     const w = world();
     const c = client(w); await settle();
-    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    c.agir('abrir-editor'); await assentar();
     const id = c.escolhidos.size + 1;
     c.escolhidos.set(id, Buffer.alloc(16));
     c.fire({
       nome: 'arquivo', chave: 'avatar',
       arquivo: { id, tipo: 'audio/wav', papel: 'som', bytes: 16 },
     });
-    for (let i = 0; i < 10; i++) await settle();
-    assert.match(content(c), /Escolha uma imagem/);
+    for (let i = 0; i < 12; i++) await settle();
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Escolha uma imagem/);
   });
+
   test('PERFIS: consulta pessoas em lotes de no máximo 32', async () => {
     const c = client(world()); await settle();
     c.snapshot.presentes = Array.from({ length: 70 }, (_, i) => ({ id: i + 1, nickname: 'Mesmo nome' }));
     c.requests.length = 0; c.tick(); await settle();
     assert.deepEqual(c.requests.map(r => r.body.people.length), [32, 32, 6]);
-    assert.match(content(c), /ID 70/);
+    assert.match(content(c), /70 pessoa\(s\)/);
+  });
+
+  // ---- a degradação é explícita, e ela é testada ----
+  //
+  // Um SEELE de API 3 não oferece superfícies. O MOD não pode falhar nele: ele
+  // volta a desenhar a lista inteira na faixa, que era tudo o que havia.
+  test('PERFIS: sem superfícies, a faixa volta a ser o diretório', async () => {
+    const w = world();
+    const c = client(w, { semApi4: true }); await settle();
+    assert.equal(c.errors.length, 0, 'o MOD falhou num SEELE sem superfícies: ' + JSON.stringify(c.errors));
+    assert.match(content(c), /ID 2/, 'a faixa não voltou a listar as pessoas');
+    assert.equal(c.contribuicoes.length, 0, 'registrou contribuição num SEELE que não as tem');
   });
 }
 if (manifest.id === 'seele/estilo') {
