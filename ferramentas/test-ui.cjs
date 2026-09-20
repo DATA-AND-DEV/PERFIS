@@ -155,6 +155,16 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
     }
 
     // ---- sair solta tudo ----
+    //
+    // **A superfície sai primeiro.** Desde que o ESTILO voltou a abrir num
+    // modal, a camada cobre a aplicação — é o que um modal faz — e o clique em
+    // «sair da sessão» não a atravessa. Fechar pela saída do produto é o
+    // caminho de quem usa, e é o que o teste passou a fazer.
+    const saidaDaSuperficie = aba.locator('.superficie-de-mod-sair').first();
+    if (await saidaDaSuperficie.count()) {
+      await saidaDaSuperficie.click();
+      await aba.waitForTimeout(400);
+    }
     await aba.click('#sair');
     await aba.waitForTimeout(500);
     // **Nomeados, e não contados.** «2 !== 0» mandou procurar às cegas o que

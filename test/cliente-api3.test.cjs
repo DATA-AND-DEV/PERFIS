@@ -364,7 +364,7 @@ const PROPRIEDADES_DE_ESTILO = new Set([
   'cor', 'fundo', 'gradiente', 'opacidade',
   'raio', 'borda', 'sombra',
   'familia', 'peso', 'corpo', 'entrelinha', 'espacamento', 'alinhamento', 'transformar',
-  'direcao', 'alinhar', 'distribuir', 'quebra', 'crescer', 'encolher',
+  'direcao', 'alinhar', 'distribuir', 'quebra', 'crescer', 'encolher', 'base',
   'intervalo', 'preenchimento', 'margem',
   'largura', 'altura', 'larguraMinima', 'larguraMaxima', 'alturaMinima', 'alturaMaxima',
   'colunas', 'posicao', 'recortar', 'proporcao',

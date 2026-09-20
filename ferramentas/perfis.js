@@ -172,15 +172,34 @@ function cartaoDaPessoa(id) {
 
   const dentro = [];
 
-  // A faixa, quando há. Ela é o **fundo**: o retrato e o nome vêm por cima,
-  // numa caixa própria com margem negativa — que é como a composição antiga
-  // sobrepunha os dois, e a API de estilo aceita `mover`.
-  if (perfil.banner) {
-    dentro.push(caixa(
-      [midia('faixa', { doServidor: imagemDoServidor(id, 'banner'), descricao: 'faixa de ' + apelido })],
-      { altura: 48, recortar: 'cortar', raio: 4 },
-    ));
-  }
+  // **A faixa existe sempre.**
+  //
+  // Ela era desenhada só quando havia imagem enviada, e sem ela o cartão era
+  // uma linha: retrato pequeno, nome, pastilha. A versão de `ce976fd` tinha
+  // faixa sempre — `linear-gradient(120deg, accent, #172c48)` quando não havia
+  // imagem —, e é ela que dá ao cartão a forma de cartão: um bloco de cor, o
+  // retrato subindo sobre ele, o nome embaixo.
+  //
+  // Aqui o gradiente é declarado por paradas, que é o que a API aceita: o
+  // valor é montado pelo produto de partes que ele conferiu, e não por um
+  // texto de `linear-gradient` que este MOD escreveria.
+  dentro.push(caixa(
+    perfil.banner
+      ? [midia('faixa', { doServidor: imagemDoServidor(id, 'banner'), descricao: 'faixa de ' + apelido })]
+      : [],
+    {
+      altura: 56,
+      recortar: 'cortar',
+      largura: 'total',
+      ...(perfil.banner ? {} : {
+        gradiente: {
+          angulo: 120,
+          paradas: [{ cor: acento, em: 0 }, { cor: '#101014', em: 100 }],
+        },
+      }),
+      ...(animacao !== 'nenhuma' ? { animacao: { nome: animacao, duracao: 6000 } } : {}),
+    },
+  ));
 
   const identidade = [
     retrato('retrato', {
@@ -190,7 +209,18 @@ function cartaoDaPessoa(id) {
       ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
       // A cor escolhida entra na borda do retrato: é a peça de identidade mais
       // estável do cartão, e a que aparece mesmo sem imagem nenhuma.
+      // O retrato sobe sobre a faixa, com uma borda da cor do fundo do
+      // cartão em volta — é o recorte que separa os dois e o que a versão de
+      // `ce976fd` fazia com `border:5px solid #171d2c`.
       estilo: {
+        largura: 52,
+        altura: 52,
+        posicao: 'relativa',
+        // O disco precisa **ser** um disco: fundo mais claro que o cartão e um
+        // anel da cor escolhida. Com o fundo igual ao do cartão ele só
+        // aparecia onde cruzava a faixa, e lia como um recorte, não como um
+        // retrato.
+        fundo: '#161310',
         borda: { largura: 2, cor: acento },
         ...(animacao !== 'nenhuma' ? { animacao: { nome: animacao, duracao: 2600 } } : {}),
       },
@@ -198,34 +228,58 @@ function cartaoDaPessoa(id) {
     pilha([
       // O nome exibido quando há; senão o apelido. Nunca os dois: repeti-los
       // seria a linha dizendo duas vezes a mesma coisa.
-      caixa([exibido || apelido], { cor: acento, peso: 'forte', corpo: 13 }),
-      ...(pronome ? [caixa([pronome], { corpo: 11, opacidade: 0.75 })] : []),
-    ], { intervalo: 0, crescer: 1 }),
+      caixa([exibido || apelido], { cor: acento, peso: 'forte', corpo: 15 }),
+      ...(pronome || status ? [caixa([
+        ...(pronome ? [distintivo([pronome], {
+          borda: { largura: 1, cor: '#3a322a' },
+          corpo: 10,
+          opacidade: 0.9,
+        })] : []),
+        ...(status ? [distintivo([status], {
+          borda: { largura: 1, cor: acento },
+          cor: acento,
+          corpo: 10,
+        })] : []),
+      ], { direcao: 'linha', intervalo: 6, quebra: 'sim' })] : []),
+    ], { intervalo: 6, crescer: 1, base: 0 }),
   ];
 
-  dentro.push(caixa(identidade, {
-    direcao: 'linha',
-    alinhar: 'centro',
-    intervalo: 8,
-    // Sobe sobre a faixa quando há uma — a sobreposição que a versão antiga
-    // fazia com posicionamento absoluto, aqui declarada.
-    ...(perfil.banner ? { mover: { x: 4, y: -14 } } : {}),
-  }));
-
-  if (status) {
-    dentro.push(distintivo([status], {
-      borda: { largura: 1, cor: acento },
-      cor: acento,
-      corpo: 10,
-    }));
-  }
+  // A linha da identidade sobe sobre a faixa. `mover` é o que a API oferece
+  // no lugar do posicionamento absoluto da versão antiga.
+  //
+  // Ela vai dentro de uma caixa com respiro: a faixa encosta nas bordas — ela
+  // é o fundo —, e o que vem depois dela não pode encostar. Sem esta caixa o
+  // retrato saía cortado pela borda esquerda do cartão.
+  dentro.push(caixa(
+    [caixa(identidade, {
+      direcao: 'linha',
+      alinhar: 'fim',
+      intervalo: 10,
+      mover: { x: 0, y: -22 },
+      margem: 0,
+      // **Na frente da faixa.** A animação da faixa cria contexto de
+      // empilhamento, e sem `posicao` o retrato subia para trás dela — metade
+      // do círculo sumia dentro do gradiente.
+      posicao: 'relativa',
+    })],
+    { preenchimento: 10, largura: 'total', margem: 0 },
+  ));
 
   // Quem não escreveu nada não ganha cartão: uma moldura vazia ao lado de um
   // nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
   const escreveu = exibido || pronome || status || perfil.avatar || perfil.banner;
   if (!escreveu) return null;
 
-  return [caixa(dentro, { intervalo: 4, largura: 'total' })];
+  return [caixa(dentro, {
+    largura: 'total',
+    fundo: '#0a0806',
+    borda: { largura: 1, cor: '#3a322a' },
+    recortar: 'cortar',
+    // O espaço de baixo é do conteúdo; o de cima é da faixa, que encosta na
+    // borda. Sem `preenchimento` assimétrico a faixa ficaria emoldurada, e ela
+    // é o fundo do cartão.
+    margem: 0,
+  })];
 }
 
 /** Os cartões de todo mundo, por `id`, para `SeeleUI.cartoes`. */
@@ -485,10 +539,20 @@ function oEditor() {
   ], { intervalo: 8 });
 
   return [
+    // **Campos e prévia lado a lado, e empilhados só quando não couberem.**
+    //
+    // `base: 0` é o que divide: sem ele, cada coluna parte do tamanho do
+    // próprio conteúdo, o par não cabe na linha, e `quebra: 'sim'` as põe uma
+    // debaixo da outra — que é o que a validação nativa viu e chamou de
+    // «desperdiça altura».
+    //
+    // Com `base: 0` e uma largura mínima em cada, a quebra passa a acontecer
+    // pelo motivo certo: enquanto 300 + 260 couberem, elas dividem o espaço;
+    // quando não couberem, a linha quebra sozinha.
     caixa([
-      caixa([formularioDoPerfil], { crescer: 1, larguraMinima: 240 }),
-      caixa([previa], { crescer: 1, larguraMinima: 220 }),
-    ], { direcao: 'linha', intervalo: 16, quebra: 'sim' }, { classe: 'editor' }),
+      caixa([formularioDoPerfil], { crescer: 1, base: 0, larguraMinima: 300 }),
+      caixa([previa], { crescer: 1, base: 0, larguraMinima: 260 }),
+    ], { direcao: 'linha', intervalo: 20, quebra: 'sim', alinhar: 'inicio' }),
     acoes([
       botao('descartar', perguntandoDescarte ? 'CONFIRMAR DESCARTE' : 'DESCARTAR',
         !mudou, { variante: perguntandoDescarte ? 'perigo' : 'discreta' }),
