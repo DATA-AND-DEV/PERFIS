@@ -146,6 +146,17 @@ function interfaceMod(id, titulo, intervalo = 4000) {
 const { texto, cabecalho, campo, escolha, botao, linha, request, iniciar } =
   interfaceMod('seele/perfis', 'PERFIS');
 
+/**
+ * Os tetos que o servidor deste MOD confere, repetidos aqui **para recusar
+ * antes de ler**.
+ *
+ * O servidor tem a palavra final (`LIMITS` em `servidor/main.js`); estes
+ * números só evitam carregar dez megabytes na memória para descobrir depois
+ * que não cabem — e deixam o botão dizer o teto antes de o seletor abrir.
+ */
+const TETO_DO_RETRATO = 10 * 1024 * 1024;
+const TETO_DA_FAIXA = 10 * 1024 * 1024;
+
 const CAMPOS = [
   ['displayName', 'NOME EXIBIDO'],
   ['pronouns', 'PRONOMES'],
@@ -166,13 +177,40 @@ const FRAGMENTO = 6000;
 
 /** O último retrato da rede, e o que está sendo editado por cima dele. */
 let ultimo = null;
-let rascunho = null;
+/**
+ * O que está sendo editado, **por entidade**.
+ *
+ * `{ [servidor + pessoa]: perfil }`, e não uma variável só. A diferença
+ * aparece no conserto de U26: `FECHAR` apagava `rascunho` sem perguntar nada,
+ * e quem tinha escrito uma biografia e fechado sem querer a perdia em silêncio.
+ *
+ * Amarrar o rascunho à entidade é o que permite às duas coisas conviverem:
+ * fechar deixa de ser destrutivo (o que estava escrito continua lá ao reabrir)
+ * e descartar continua existindo, explícito, para quem quis mesmo jogar fora.
+ */
+const rascunhos = new Map();
 let aviso = '';
+/** Se `FECHAR` foi apertado com alteração pendente e ainda espera decisão. */
+let perguntandoDescarte = false;
 /** De quem a ficha aberta é. Nulo quando ninguém abriu nenhuma. */
 let aberto = null;
 
 const meuPerfil = () => ultimo?.perfis?.[String(ultimo.me)] ?? {};
-const emEdicao = () => rascunho ?? meuPerfil();
+
+/**
+ * A chave do rascunho: servidor e pessoa.
+ *
+ * O canal entra porque o servidor deste MOD guarda perfil por servidor, e o
+ * MOD atravessa troca de canal sem recarregar. Um rascunho de perfil não deve
+ * viajar de um destino para outro — foi um dos riscos que a auditoria mandou
+ * reproduzir, e amarrá-lo aqui é o que o fecha.
+ */
+const chaveDoRascunho = () => String(ultimo?.canal ?? '-') + ':' + String(ultimo?.me ?? '-');
+
+/** O rascunho desta entidade, ou nada quando ninguém editou. */
+const meuRascunho = () => rascunhos.get(chaveDoRascunho()) ?? null;
+
+const emEdicao = () => meuRascunho() ?? meuPerfil();
 
 /** A ficha de outra pessoa: mostrada, e nunca editável. */
 function fichaDeOutro(id) {
@@ -209,7 +247,8 @@ function fichaDeOutro(id) {
 /** A minha ficha: campos, efeito, imagens e o que grava. */
 function minhaFicha() {
   const perfil = emEdicao();
-  const mudou = rascunho !== null && JSON.stringify(rascunho) !== JSON.stringify(meuPerfil());
+  const guardado = meuRascunho();
+  const mudou = guardado !== null && JSON.stringify(guardado) !== JSON.stringify(meuPerfil());
   const partes = [cabecalho('MEU PERFIL')];
   const meu = String(ultimo.me);
   if (meuPerfil().banner) {
@@ -246,8 +285,22 @@ function minhaFicha() {
   // **Escolher é ato de quem usa.** O botão abre o seletor do sistema; o que
   // volta é um identificador e o que o produto provou sobre os bytes.
   partes.push(linha([
-    { forma: 'arquivo', chave: 'avatar', dentro: 'ENVIAR RETRATO' },
-    { forma: 'arquivo', chave: 'banner', dentro: 'ENVIAR FAIXA' },
+    {
+      forma: 'arquivo', chave: 'avatar', dentro: 'ENVIAR RETRATO',
+      // **Para quê, de que tipo, até quanto.** O produto usa a finalidade como
+      // título do diálogo do sistema, o tipo como filtro de extensões e o teto
+      // para recusar antes de ler. A auditoria de 20/09/2026 abriu este mesmo
+      // botão e leu «Escolha um arquivo para este MOD», com JSONs na lista.
+      finalidade: 'Escolha o retrato do seu perfil neste servidor',
+      tipos: ['imagem'],
+      limiteDeBytes: TETO_DO_RETRATO,
+    },
+    {
+      forma: 'arquivo', chave: 'banner', dentro: 'ENVIAR FAIXA',
+      finalidade: 'Escolha a faixa que aparece atrás do seu retrato',
+      tipos: ['imagem'],
+      limiteDeBytes: TETO_DA_FAIXA,
+    },
   ]));
   partes.push(texto(aviso || 'Revisão ' + (meuPerfil().revision ?? 0)));
   return partes;
@@ -400,7 +453,10 @@ async function gravar(canal) {
   // ser recusada com «seu perfil mudou em outra janela» — que é verdade sobre a
   // revisão e mentira sobre o que aconteceu.
   ultimo.perfis[String(ultimo.me)] = resposta.profile ?? perfil;
-  rascunho = null;
+  // Gravado é a única saída que apaga o rascunho sem perguntar: o que ele
+  // guardava está no servidor agora.
+  rascunhos.delete(chaveDoRascunho());
+  perguntandoDescarte = false;
   aviso = 'gravado';
 }
 
@@ -445,9 +501,13 @@ iniciar(
   (evento, canal, repintar) => {
     if (!ultimo) return null;
     if (evento.nome === 'arquivo') {
-      // Cancelar é uma resposta: `null` quer dizer que o seletor foi fechado.
+      // **Cancelar e falhar deixaram de ser a mesma resposta.** Os dois
+      // chegavam como `arquivo: null`; agora `resultado` os separa, e o
+      // cancelamento volta a ser o que a auditoria pediu — neutro e sem drama.
       if (!evento.arquivo) {
-        aviso = evento.porque ?? 'nenhum arquivo escolhido';
+        aviso = evento.resultado === 'falhou'
+          ? (evento.porque || 'não foi possível abrir o seletor')
+          : '';
         repintar(desenhoDoEstado());
         return null;
       }
@@ -465,8 +525,10 @@ iniciar(
       );
     }
     if (evento.nome === 'campo' || evento.nome === 'escolha') {
-      rascunho = { ...(rascunho ?? meuPerfil()) };
-      rascunho[evento.chave] = evento.valor;
+      const editado = { ...(meuRascunho() ?? meuPerfil()) };
+      editado[evento.chave] = evento.valor;
+      rascunhos.set(chaveDoRascunho(), editado);
+      perguntandoDescarte = false;
       aviso = '';
       repintar(desenhoDoEstado());
       return null;
@@ -478,13 +540,40 @@ iniciar(
       repintar(desenhoDoEstado());
       return null;
     }
+    // ---- fechar, e o que ele não pode fazer em silêncio (U26) ----
+    //
+    // `FECHAR` apagava o rascunho. Quem escrevesse a biografia e fechasse a
+    // ficha — de propósito ou sem querer — perdia o que tinha escrito sem
+    // nenhum aviso. Agora fechar **guarda**: o rascunho pertence à entidade e
+    // continua lá na próxima abertura.
+    //
+    // O aviso só aparece quando há perda possível, que é a regra que a
+    // auditoria pediu: «cancelar/descartar explícitos e aviso apenas quando
+    // houver perda».
     if (evento.chave === 'fechar') {
-      aberto = null; rascunho = null; aviso = '';
+      const guardado = meuRascunho();
+      const mudou = guardado !== null
+        && JSON.stringify(guardado) !== JSON.stringify(meuPerfil());
+      aberto = null;
+      aviso = mudou
+        ? 'Fechado com alterações não gravadas. Elas continuam aqui ao reabrir.'
+        : '';
+      perguntandoDescarte = false;
       repintar(desenhoDoEstado());
       return null;
     }
+    // **Descartar é explícito, e confirma.** Ele é a única porta que joga fora
+    // o que foi escrito, então ele pergunta uma vez antes de fazê-lo.
     if (evento.chave === 'descartar') {
-      rascunho = null; aviso = '';
+      if (!perguntandoDescarte) {
+        perguntandoDescarte = true;
+        aviso = 'Descartar apaga o que você escreveu e não gravou. Aperte DESCARTAR de novo para confirmar.';
+        repintar(desenhoDoEstado());
+        return null;
+      }
+      rascunhos.delete(chaveDoRascunho());
+      perguntandoDescarte = false;
+      aviso = 'Alterações descartadas.';
       repintar(desenhoDoEstado());
       return null;
     }

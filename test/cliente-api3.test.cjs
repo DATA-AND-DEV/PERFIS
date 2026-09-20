@@ -7,16 +7,40 @@ const root = path.resolve(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
 const source = fs.readFileSync(path.join(root, manifest.client), 'utf8');
 const serverSource = fs.readFileSync(path.join(root, manifest.server), 'utf8');
+/**
+ * O servidor deste MOD, com o disco e o relógio de mentira.
+ *
+ * # O que este mundo **não** faz mais, e por que a mudança é o conserto
+ *
+ * Ele completava `revision` e `nonce` em todo pedido antes de entregá-lo ao
+ * servidor. Isso fazia o teste do cliente provar um caminho que o produto não
+ * percorre: o cliente nunca mandava nenhum dos dois, e na máquina de quem usa
+ * a criação de campanha voltava `invalid-id` — com a suíte inteira verde.
+ *
+ * Agora o pedido atravessa **intacto**. Um teste que precise de uma escrita
+ * direta ao servidor — sem passar pelo cliente — monta os campos ele mesmo,
+ * por `escritaDireta`, e essa é a diferença que o nome deixa visível.
+ */
 function world() {
-  const data = {}, files = new Map(); let revision = 0, serial = 0;
+  const data = {}, files = new Map();
   const call = (body, person = '1', channel = 1) => {
     const sandbox = vm.createContext({ dados: data, mundo: { agora: () => 100 }, arquivos: { ler: p => files.get(p) ?? null, escrever: (p, v) => (files.set(p, v), true), apagar: p => files.delete(p), listar: () => [...files.keys()] } });
     vm.runInContext(serverSource, sandbox);
-    const result = JSON.parse(sandbox.aoPedir(JSON.stringify({ person, channel, admin: person === '1', write: true }), JSON.stringify({ revision, nonce: 'teste-' + (++serial), ...body })));
-    if (result.campaign) revision = result.campaign.revision;
-    return result;
+    return JSON.parse(sandbox.aoPedir(JSON.stringify({ person, channel, admin: person === '1', write: true }), JSON.stringify(body)));
   };
-  return { data, call };
+  /**
+   * Uma escrita montada pelo teste, com a revisão que o servidor tem agora.
+   *
+   * É o que semeia estado para um caso; **não** é o caminho do produto, e o
+   * nome diz isso para ninguém voltar a confundir os dois.
+   */
+  let serial = 0;
+  const escritaDireta = (body, person = '1', channel = 1) => {
+    const atual = call({ op: 'view' }, person, channel);
+    const revision = atual.campaign ? atual.campaign.revision : 0;
+    return call({ revision, nonce: 'semente-' + (++serial), ...body }, person, channel);
+  };
+  return { data, call, escritaDireta };
 }
 function client(w, options = {}) {
   const regions = [], themes = [], requests = [], timers = [], errors = [], cartoes = [], pedidosDeCartao = [];
@@ -128,7 +152,10 @@ const CHAVES_DA_FORMA = {
   campo: ['chave', 'rotulo', 'valor'],
   escolha: ['chave', 'rotulo', 'valor', 'opcoes'],
   botao: ['chave', 'dentro', 'desligado'],
-  arquivo: ['chave', 'dentro', 'desligado'],
+  // `finalidade`, `tipos` e `limiteDeBytes` chegaram com o conserto de U21/U22:
+  // o botão de arquivo não tinha nome acessível nenhum, e o seletor do sistema
+  // abria dizendo «Escolha um arquivo para este MOD» com JSONs na lista.
+  arquivo: ['chave', 'dentro', 'rotulo', 'desligado', 'finalidade', 'tipos', 'limiteDeBytes'],
   tela: ['chave', 'largura', 'altura', 'figuras', 'tracos'],
   midia: ['chave', 'fonte', 'doServidor', 'descricao', 'tocando'],
 };
@@ -216,8 +243,8 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: a ficha aberta fere, cura, marca condição e entra na iniciativa', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -247,10 +274,10 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: o mapa escolhido chega inteiro ao servidor e é devolvido', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
 
@@ -271,8 +298,8 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: a ficha inteira se edita e grava, e o rascunho sobrevive à consulta', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -300,11 +327,11 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: pintar parede troca a casa, e não move a peça que está nela', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
-    w.call({ op: 'token-add', scene: id, name: 'Chefe', x: 3, y: 3 });
+    w.escritaDireta({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'token-add', scene: id, name: 'Chefe', x: 3, y: 3 });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
 
@@ -332,10 +359,10 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: trilha da mesa e da cena, e verbete do compêndio', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
 
@@ -356,8 +383,8 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: o retrato de uma ficha é enviado e aparece', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -385,9 +412,9 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: espaços de magia, preparar e conjurar gastam o espaço', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
-    w.call({ op: 'entry-save', name: 'Míssil', kind: 'magia', level: 1, published: true });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.escritaDireta({ op: 'entry-save', name: 'Míssil', kind: 'magia', level: 1, published: true });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -415,8 +442,8 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: ações com fórmula, usos e recuperação se criam, usam e saem', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    w.call({ op: 'sheet-create', name: 'Iria', owner: '1' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const ficha = w.call({ op: 'view' }, '1').campaign.sheets.at(-1);
@@ -444,7 +471,7 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: um verbete se edita e se publica', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
 
@@ -474,10 +501,10 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: a cena se ajusta — grade, descrição e notas do GM', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'A Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'scene-show', id });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
 
@@ -502,19 +529,19 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: o tabuleiro é figura declarada, e arrastar uma peça a move no servidor', async () => {
     const w = world();
-    assert.equal(w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' }).ok, true);
-    assert.equal(w.call({ op: 'sheet-create', name: 'Iria', owner: '2' }).ok, true);
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    assert.equal(w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'sheet-create', name: 'Iria', owner: '2' }).ok, true);
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     assert.equal(cena.ok, true);
     const id = cena.campaign.scenes.at(-1).id;
     const ficha = cena.campaign.sheets.at(-1).id;
-    assert.equal(w.call({ op: 'scene-show', id }).ok, true);
-    assert.equal(w.call({ op: 'token-add', scene: id, name: 'Iria', sheet: ficha, x: 2, y: 3 }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'scene-show', id }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'token-add', scene: id, name: 'Iria', sheet: ficha, x: 2, y: 3 }).ok, true);
     // **Duas peças na mesma casa.** É aqui que `alvo` importa: sem ele, este
     // lado teria de adivinhar qual das duas o dedo pegou, e adivinharia pela
     // posição — que é igual para as duas. A que está por cima é a última
     // declarada, e é a que o produto entrega.
-    assert.equal(w.call({ op: 'token-add', scene: id, name: 'Sombra', x: 2, y: 3 }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'token-add', scene: id, name: 'Sombra', x: 2, y: 3 }).ok, true);
 
     // O GM é a pessoa 1, e o cliente entra como ela: o GM move qualquer peça,
     // então a permissão de jogador não entra neste caso.
@@ -556,11 +583,11 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: a recusa do servidor devolve a peça e é dita', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
-    w.call({ op: 'token-add', scene: id, name: 'Chefe', x: 1, y: 1 });
+    w.escritaDireta({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'token-add', scene: id, name: 'Chefe', x: 1, y: 1 });
     // Quem entra é a pessoa 2, que não é GM e não tem ficha nesta peça.
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '2', canal) });
     await settle();
@@ -573,9 +600,55 @@ if (manifest.id === 'seele/mesa') {
     const gravada = w.call({ op: 'view' }, '1').campaign.scenes.find(s => s.id === id).tokens[0];
     assert.equal(gravada.x, 1, 'o servidor moveu uma peça que não era de quem arrastou');
   });
+  // ---- o guarda de `invalid-id` ----
+  //
+  // A auditoria de 20/09/2026 reproduziu isolado: o pedido que o cliente
+  // montava não tinha `nonce` nem `revision`, e o servidor recusa os dois
+  // **antes** de qualquer escrita. Criar campanha devolvia `invalid-id` no
+  // produto enquanto a suíte inteira ficava verde — porque era o **teste** que
+  // completava os campos antes de chamar o servidor.
+  //
+  // Este caso olha o pedido como ele sai do cliente, e não o resultado: um
+  // `escrever` que voltasse a omitir qualquer um dos dois falha aqui, e falha
+  // dizendo qual campo faltou.
+  test('MESA: o pedido que sai do cliente carrega nonce e revisão', async () => {
+    const w = world();
+    const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+
+    c.fire({ nome: 'campo', chave: 'nova-campanha', valor: 'A Casa' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'criar-campanha' });
+    await settle(); await settle();
+
+    const criacao = c.requests.find(r => r.body.op === 'setup');
+    assert.ok(criacao, 'CRIAR MESA não foi ao servidor');
+    assert.match(String(criacao.body.nonce ?? ''), /^[a-z0-9-]{1,64}$/,
+      'o pedido de criação saiu sem `nonce`, e o servidor recusa com invalid-id');
+    // `setup` cria: não há revisão de que discordar, e mandá-la seria inventar.
+    assert.equal('revision' in criacao.body, false,
+      'a criação mandou `revision` para uma campanha que ainda não existe');
+    assert.ok(w.call({ op: 'view' }, '1').campaign, 'a campanha não foi criada');
+
+    // E a operação seguinte concorda com a revisão que o servidor tem agora.
+    const antes = c.requests.length;
+    c.fire({ nome: 'campo', chave: 'formula', valor: '2d6+3' });
+    c.fire({ nome: 'botao', chave: 'rolar' });
+    await settle(); await settle();
+    const rolagem = c.requests.slice(antes).find(r => r.body.op === 'roll');
+    assert.ok(rolagem, 'ROLAR não foi ao servidor');
+    assert.match(String(rolagem.body.nonce ?? ''), /^[a-z0-9-]{1,64}$/,
+      'a rolagem saiu sem `nonce`');
+    assert.equal(rolagem.body.revision, w.call({ op: 'view' }, '1').campaign.revision - 1,
+      'a rolagem não concordou com a revisão que o servidor tinha ao recebê-la');
+
+    // Duas escritas não repetem a marca: o servidor guarda recibos, e repetir
+    // a marca faria a segunda ser respondida com a projeção da primeira.
+    assert.notEqual(criacao.body.nonce, rolagem.body.nonce);
+  });
   test('MESA: rolar dados vai ao servidor com a fórmula digitada', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     c.fire({ nome: 'campo', chave: 'formula', valor: '2d6+3' });
@@ -588,11 +661,11 @@ if (manifest.id === 'seele/mesa') {
   });
   test('MESA: um toque no vazio do tabuleiro não move peça nenhuma', async () => {
     const w = world();
-    w.call({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
-    const cena = w.call({ op: 'scene-create', name: 'Salão', kind: 'map' });
+    w.escritaDireta({ op: 'setup', name: 'Casa', system: 'free', gm: '1' });
+    const cena = w.escritaDireta({ op: 'scene-create', name: 'Salão', kind: 'map' });
     const id = cena.campaign.scenes.at(-1).id;
-    w.call({ op: 'scene-show', id });
-    w.call({ op: 'token-add', scene: id, name: 'Chefe', x: 1, y: 1 });
+    w.escritaDireta({ op: 'scene-show', id });
+    w.escritaDireta({ op: 'token-add', scene: id, name: 'Chefe', x: 1, y: 1 });
     const c = client(w, { request: (_i, canal, corpo) => w.call(corpo, '1', canal) });
     await settle();
     const antes = c.requests.length;
@@ -604,7 +677,7 @@ if (manifest.id === 'seele/mesa') {
 }
 if (manifest.id === 'seele/perfis') {
   test('PERFIS: a lista traz cada pessoa por ID, e abrir mostra a ficha dela', async () => {
-    const w = world(); assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '<img src=x>', pronouns: 'ela/dela', bio: 'Minha bio', status: 'Presente', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
+    const w = world(); assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '<img src=x>', pronouns: 'ela/dela', bio: 'Minha bio', status: 'Presente', accent: '#a78bfa', effect: 'aurora' } }, '2').ok, true);
     const before = JSON.stringify(w.data), c = client(w); await settle();
     // A lista: nome e ID de cada um, e o botão que abre.
     assert.match(content(c), /<img src=x>/); assert.match(content(c), /ID 2/);
@@ -628,7 +701,7 @@ if (manifest.id === 'seele/perfis') {
   test('PERFIS: o cartão de quem escreveu algo aparece na lista do produto', async () => {
     const w = world();
     // Duas pessoas: uma escreveu perfil, a outra não escreveu nada.
-    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: 'Lia da Torre', pronouns: 'ela/dela', status: 'jogando', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia da Torre', pronouns: 'ela/dela', status: 'jogando', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
 
     const cartoes = c.cartoes();
@@ -649,7 +722,7 @@ if (manifest.id === 'seele/perfis') {
 
   test('PERFIS: o cartão é declaração, e nada dentro dele recebe clique', async () => {
     const w = world();
-    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
 
     // **Nada que receba foco ou clique.** A linha do roster já tem um botão do
@@ -675,7 +748,7 @@ if (manifest.id === 'seele/perfis') {
 
   test('PERFIS: o retrato do cartão vem do servidor deste MOD, e nunca de um endereço', async () => {
     const w = world();
-    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'elu/delu', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'elu/delu', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     // Sem retrato guardado, o cartão não declara mídia nenhuma.
     let c = client(w); await settle();
     assert.ok(!JSON.stringify(c.cartoesPedidos()).includes('midia'), 'declarou retrato sem haver retrato');
@@ -695,7 +768,7 @@ if (manifest.id === 'seele/perfis') {
 
   test('PERFIS: sair do canal tira os cartões da lista', async () => {
     const w = world();
-    assert.equal(w.call({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: '', pronouns: 'ela/dela', status: '', bio: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
     const c = client(w); await settle();
     assert.ok(c.cartoes()['2'], 'o cartão não chegou à lista');
     // Fora de canal não há perfil de ninguém: um cartão de antes seria uma
@@ -733,9 +806,9 @@ if (manifest.id === 'seele/perfis') {
     // Um PNG mínimo, pelo caminho de sempre do servidor: `upload-start` e um
     // fragmento só, com o prefixo que o servidor exige ver no primeiro.
     const png = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
-    const inicio = w.call({ op: 'upload-start', slot: 'avatar', length: png.length }, '2');
+    const inicio = w.escritaDireta({ op: 'upload-start', slot: 'avatar', length: png.length }, '2');
     assert.equal(inicio.ok, true, inicio.error);
-    const parte = w.call({ op: 'upload-part', slot: 'avatar', token: inicio.token, index: 0, part: png }, '2');
+    const parte = w.escritaDireta({ op: 'upload-part', slot: 'avatar', token: inicio.token, index: 0, part: png }, '2');
     assert.equal(parte.ok, true, parte.error);
     assert.equal(parte.finished, true, 'o upload do vetor não completou');
     const c = client(w); await settle();
@@ -779,15 +852,74 @@ if (manifest.id === 'seele/perfis') {
     // **Devolvido na hora**, sem esperar a saída da sessão.
     assert.deepEqual(c.soltos, [id], 'o arquivo escolhido não foi devolvido');
   });
-  test('PERFIS: cancelar o seletor é uma resposta, e não silêncio', async () => {
+  // **Cancelar é uma resposta, e agora é uma resposta com nome.**
+  //
+  // Antes, fechar o seletor e o seletor falhar chegavam iguais — os dois como
+  // `arquivo: null` — e o MOD respondia aos dois com o mesmo aviso. A auditoria
+  // de 20/09/2026 pediu «cancelamento neutro e silencioso quando apropriado»,
+  // e isso só é possível quando o MOD consegue distinguir os dois casos:
+  // `resultado` é o campo que os separa.
+  // ---- o rascunho pertence à pessoa, e não ao momento (U26) ----
+  //
+  // `FECHAR` apagava `rascunho`. Quem escrevesse a biografia e fechasse a
+  // ficha — de propósito ou sem querer — perdia o que escreveu, em silêncio.
+  // O conserto amarra o rascunho à entidade: fechar guarda, e só `DESCARTAR`
+  // — explícito e confirmado — joga fora.
+  test('PERFIS: fechar a ficha não apaga o que foi escrito; descartar pede confirmação', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Uma biografia longa que custou a ser escrita.' });
+    await settle();
+    assert.equal(c.controles().get('bio').valor, 'Uma biografia longa que custou a ser escrita.');
+
+    // Fecha e reabre: o que estava escrito continua lá.
+    c.fire({ nome: 'botao', chave: 'fechar' }); await settle();
+    c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
+    assert.equal(
+      c.controles().get('bio').valor,
+      'Uma biografia longa que custou a ser escrita.',
+      'fechar a ficha apagou o que tinha sido escrito e não gravado',
+    );
+
+    // E descartar não joga fora no primeiro toque: ele pergunta.
+    c.fire({ nome: 'botao', chave: 'descartar' }); await settle();
+    assert.match(content(c), /Aperte DESCARTAR de novo/,
+      'descartar apagou sem perguntar');
+    assert.equal(
+      c.controles().get('bio').valor,
+      'Uma biografia longa que custou a ser escrita.',
+      'o primeiro DESCARTAR já apagou o rascunho',
+    );
+
+    // No segundo, sim.
+    c.fire({ nome: 'botao', chave: 'descartar' }); await settle();
+    assert.equal(c.controles().get('bio').valor, '', 'confirmar o descarte não apagou');
+  });
+
+  test('PERFIS: cancelar o seletor é neutro; falhar é dito', async () => {
     const w = world();
     const c = client(w); await settle();
     c.fire({ nome: 'botao', chave: 'abrir-2' }); await settle();
     const antes = c.requests.length;
-    c.fire({ nome: 'arquivo', chave: 'avatar', arquivo: null });
+
+    // Cancelou: não vai ao servidor e não acusa nada na tela.
+    c.fire({ nome: 'arquivo', chave: 'avatar', arquivo: null, resultado: 'cancelado' });
     await settle();
     assert.equal(c.requests.length, antes, 'cancelar foi ao servidor');
-    assert.match(content(c), /nenhum arquivo escolhido/);
+    assert.doesNotMatch(content(c), /nenhum arquivo escolhido/,
+      'cancelar continua deixando um aviso onde não há nada errado');
+
+    // Falhou: o motivo do produto aparece onde a pessoa apertou.
+    c.fire({
+      nome: 'arquivo', chave: 'avatar', arquivo: null,
+      resultado: 'falhou', porque: 'papel-nao-serve:som',
+    });
+    await settle();
+    assert.equal(c.requests.length, antes, 'uma falha foi ao servidor');
+    assert.match(content(c), /papel-nao-serve:som/,
+      'a falha do seletor não chegou a quem apertou');
   });
   test('PERFIS: um som escolhido no lugar de uma imagem é recusado pelo nome', async () => {
     const w = world();
@@ -813,7 +945,7 @@ if (manifest.id === 'seele/perfis') {
 if (manifest.id === 'seele/estilo') {
   test('ESTILO: os seis tokens, densidade, fonte, raio e brilho; reset libera a camada', async () => {
     const w = world(), initial = w.call({ op: 'view' });
-    assert.equal(w.call({ op: 'save', theme: initial.theme, revision: 0 }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'save', theme: initial.theme, revision: 0 }).ok, true);
     const before = JSON.stringify(w.data), c = client(w); await settle();
     assert.deepEqual(c.themes[0], {
       acento: initial.theme.accent, fundo: initial.theme.background,
@@ -830,11 +962,11 @@ if (manifest.id === 'seele/estilo') {
     assert.equal(typeof initial.theme.glow, 'boolean', 'o brilho deixou de ser booleano');
     assert.equal(JSON.stringify(w.data), before);
     c.tick(); await settle(); assert.equal(c.themes.length, 1);
-    assert.equal(w.call({ op: 'reset', revision: 1 }).ok, true);
+    assert.equal(w.escritaDireta({ op: 'reset', revision: 1 }).ok, true);
     c.tick(); await settle(); assert.deepEqual(c.themes.at(-1), {});
   });
   test('ESTILO: recusa do produto é mostrada e não confirma aplicação', async () => {
-    const w = world(), initial = w.call({ op: 'view' }); w.call({ op: 'save', theme: initial.theme, revision: 0 });
+    const w = world(), initial = w.call({ op: 'view' }); w.escritaDireta({ op: 'save', theme: initial.theme, revision: 0 });
     let fail = true;
     const c = client(w, { tema: async () => { if (fail) throw Error('acento já é do MOD outro/tema'); } });
     await settle(); assert.match(content(c), /outro\/tema/); assert.equal(c.themes.length, 0);
@@ -951,6 +1083,59 @@ if (manifest.id === 'seele/estilo') {
     // rascunho ficaria com '8' e a tela diria «mudou» para sempre.
     await settle();
     assert.equal(c.controles().get('gravar')?.desligado, true, 'ficou dizendo que ainda há mudança por gravar');
+  });
+
+  // ---- o guarda da afirmação obsoleta (U24) ----
+  //
+  // A região dizia, depois de gravar arredondamento 8 com sucesso, que «a API
+  // de tema recusa os dois». Não recusava: `NUMEROS_DA_API` e
+  // `BANDEIRAS_DA_API` aplicam raio e brilho, e o caso acima prova que os dois
+  // chegam ao produto como número e booleano.
+  //
+  // Duas descrições concorrentes do mesmo recurso foi o que produziu a
+  // regressão. Este caso fixa a que fica: o **resultado** da aplicação.
+  test('ESTILO: depois de aplicar, a região diz o que foi desenhado — e não uma recusa inventada', async () => {
+    const w = world();
+    const c = client(w, { request: (_id, canal, corpo) => w.call(corpo, '1', canal) });
+    await settle();
+    c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
+    c.fire({ nome: 'escolha', chave: 'glow', valor: 'sim' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar' });
+    await settle(); await settle(); await settle();
+
+    const dito = content(c);
+    assert.doesNotMatch(dito, /recusa os dois/,
+      'a afirmação obsoleta de recusa voltou depois de o produto ter aplicado');
+    assert.doesNotMatch(dito, /não desenhado aqui/,
+      'a região continua dizendo que o que foi aplicado não é desenhado');
+    assert.match(dito, /Desenhado nesta sessão/,
+      'a região não disse o resultado real da aplicação');
+    assert.match(dito, /arredondamento 8 px/);
+    assert.match(dito, /com brilho/);
+  });
+
+  // E a outra metade da mesma regra: quando a API **recusa de verdade**, é a
+  // recusa dela que aparece — com o motivo que ela deu, e não um texto fixo.
+  test('ESTILO: uma recusa real do produto é dita com o motivo que o produto deu', async () => {
+    const w = world();
+    const c = client(w, {
+      request: (_id, canal, corpo) => w.call(corpo, '1', canal),
+      tema: async valores => {
+        if (valores && valores.arredondamento === 8) {
+          throw new Error('arredondamento fora do intervalo aceito');
+        }
+      },
+    });
+    await settle();
+    c.fire({ nome: 'escolha', chave: 'radius', valor: '8' });
+    await settle();
+    c.fire({ nome: 'botao', chave: 'gravar' });
+    await settle(); await settle(); await settle();
+
+    const dito = content(c);
+    assert.match(dito, /arredondamento fora do intervalo aceito/,
+      'a recusa do produto não chegou a quem estava editando: ' + dito);
   });
 
   test('ESTILO: quem não administra vê o tema e não recebe controles de edição', async () => {
