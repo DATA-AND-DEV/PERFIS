@@ -268,6 +268,11 @@ const dono={
 };
 const escolhidos=[];
 
+// A raiz da regiao leva o 'data-mod' que o produto poe nela — e nao e detalhe:
+// e por ele que o teste do navegador encontra o que este MOD desenhou. Sem
+// ele, um MOD que nao declare cartao nenhum nao tem elemento nenhum marcado, e
+// o teste espera para sempre por algo que existe e nao esta nomeado.
+$('regioes-dos-mods').dataset.mod=id;
 const regiao=new RegiaoDeMod(id,dono,$('regioes-dos-mods'),PERFIS_DE_RENDER.regiao);
 const contribuicoes=new RegistroDeContribuicoes();
 const superficies=new SuperficiesDoMod(id,dono,{
