@@ -253,6 +253,8 @@ function client(w, options = {}) {
     superficies,
     /** A última árvore que o MOD montou numa superfície. */
     superficie: chave => superficies.get(String(chave))?.arvores.at(-1) ?? null,
+    /** O nome que o produto escreve na cartela da janela. */
+    tituloDe: chave => superficies.get(String(chave))?.titulo ?? null,
     /** Os controles de uma superfície, pela chave — como `controles()` na região. */
     controlesDe: chave => {
       const achados = new Map();
@@ -1211,7 +1213,10 @@ if (manifest.id === 'seele/perfis') {
 
     // A prévia existe, e ela usa o **mesmo** desenho do cartão: duas funções
     // de desenho seriam duas verdades sobre o mesmo cartão.
-    assert.match(JSON.stringify(c.superficie('perfis-editor')), /PRÉVIA/);
+    // A prévia continua lá; o rótulo «PRÉVIA» saiu. Ela abre a janela em
+    // tamanho real, e o que diz que aquilo é uma prévia é a linha acima dela —
+    // «Assim você aparece» — e não uma etiqueta sobre uma caixa.
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Assim você aparece/);
 
     // E o diálogo é um diálogo de verdade: ele pede confirmação ao fechar com
     // alteração pendente, em vez de descartar em silêncio.

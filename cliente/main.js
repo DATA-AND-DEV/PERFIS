@@ -551,6 +551,8 @@ function cartaoDaPessoa(id) {
     ], { intervalo: 6, crescer: 1, base: 0 }),
   ];
 
+  const bio = String(perfil.bio ?? '').trim();
+
   // A linha da identidade sobe sobre a faixa. `mover` é o que a API oferece
   // no lugar do posicionamento absoluto da versão antiga.
   //
@@ -571,6 +573,23 @@ function cartaoDaPessoa(id) {
     })],
     { preenchimento: 10, largura: 'total', margem: 0 },
   ));
+
+  // **A biografia entra no cartão.** Ela é o único campo do editor que não
+  // tinha resposta visual nenhuma: digitava-se, e a prévia continuava igual.
+  // Três linhas no máximo — o cartão mora numa lista de pessoas, e uma
+  // biografia inteira ali empurraria as outras para fora da tela.
+  if (bio) {
+    dentro.push(caixa([bio], {
+      corpo: 12,
+      cor: '#c9c1ae',
+      entrelinha: 1.45,
+      margem: 0,
+      preenchimento: 10,
+      mover: { x: 0, y: -18 },
+      recortar: 'cortar',
+      alturaMaxima: 58,
+    }));
+  }
 
   // Quem não escreveu nada não ganha cartão: uma moldura vazia ao lado de um
   // nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
@@ -785,81 +804,134 @@ function osDetalhes(id) {
  * empilhados em janela estreita». O empilhamento é uma consulta de contêiner,
  * e não de janela: o diálogo tem largura própria, e é ela que decide.
  */
+/**
+ * Um título de grupo dentro de uma superfície.
+ *
+ * O terceiro e último nível de tipo desta tela. Acima dele está a cartela do
+ * título da janela, que o produto monta; abaixo, o rótulo de campo, que o
+ * produto desenha em mono apagado. Tudo o que não for uma destas três coisas
+ * não é título de nada — e era esse o defeito da versão anterior, em que cada
+ * campo carregava um rótulo do mesmo peso e a tela inteira lia como uma lista
+ * de coisas iguais.
+ */
+function grupo(nome) {
+  return caixa([nome], {
+    familia: 'sans',
+    peso: 'forte',
+    corpo: 13,
+    espacamento: 1,
+    transformar: 'maiuscula',
+    cor: '#908574',
+  });
+}
+
+/**
+ * O editor: **o cartão em tamanho real, e os controles servindo ele.**
+ *
+ * # Por que a prévia subiu
+ *
+ * A composição anterior punha o formulário à esquerda e a prévia à direita, e
+ * a coluna da direita ficava 60% vazia — o cartão tem 90px de altura e o
+ * formulário tem 700. O que se está editando aparecia como um detalhe ao lado
+ * da ferramenta de editar.
+ *
+ * Aqui ele abre a janela, com a largura inteira, do tamanho em que vai
+ * aparecer na lista. Quem digita o nome vê o nome mudar no lugar para onde já
+ * está olhando, e a coluna vazia deixa de existir porque não há mais duas
+ * colunas de alturas diferentes.
+ *
+ * # Por que dois grupos, e não seis campos
+ *
+ * «Identidade» e «imagens» são decisões de naturezas diferentes: uma é texto
+ * que se digita, a outra é arquivo que se escolhe e que pode falhar no envio.
+ * Separá-las é hierarquia de comando — `specs/07` — e não arrumação.
+ */
 function oEditor() {
   const perfil = emEdicao();
   const mudou = mudouOPerfil();
   const meu = String(ultimo.me);
+  const acento = acentoDe(perfil);
+  const cartao = cartaoDaPreviaComRascunho(meu);
 
-  const formularioDoPerfil = formulario('perfil', [
+  // **A prévia, em tamanho real.** Sem moldura extra em volta: o cartão já tem
+  // a dele, e uma segunda borda a 10px da primeira é a moldura de uma moldura.
+  // O que diz que aquilo é uma prévia é a linha acima dela, não um quadro.
+  const previa = pilha([
+    caixa([
+      grupo('Assim você aparece'),
+      caixa([mudou ? 'ainda não gravado' : 'como está gravado'], {
+        corpo: 11,
+        cor: mudou ? acento : '#908574',
+      }),
+    ], { direcao: 'linha', alinhar: 'fim', distribuir: 'entre', intervalo: 12, quebra: 'sim' }),
+    ...(cartao ?? [caixa([
+      'Escreva um nome, escolha uma cor, e o cartão aparece aqui.',
+    ], {
+      preenchimento: 20,
+      alinhamento: 'centro',
+      cor: '#908574',
+      borda: { largura: 1, estilo: 'tracejada', cor: '#3a322a' },
+      largura: 'total',
+    })]),
+  ], { intervalo: 10 });
+
+  const identidade = pilha([
+    grupo('Identidade'),
     campo('displayName', 'NOME EXIBIDO', perfil.displayName ?? ''),
-    campo('pronouns', 'PRONOMES', perfil.pronouns ?? ''),
-    campo('status', 'STATUS', perfil.status ?? ''),
+    // Pronome e status dividem a linha: são dois campos curtos, e um deles
+    // sozinho numa linha de 900px é uma linha dizendo que sobrou espaço.
+    caixa([
+      caixa([campo('pronouns', 'PRONOMES', perfil.pronouns ?? '')],
+        { crescer: 1, base: 0, larguraMinima: 160 }),
+      caixa([campo('status', 'STATUS', perfil.status ?? '')],
+        { crescer: 1, base: 0, larguraMinima: 160 }),
+    ], { direcao: 'linha', intervalo: 12, quebra: 'sim' }),
     // **Multilinha.** U20: «"Sobre mim" é input de uma linha.» Não era uma
     // escolha deste pacote: a API 3 não tinha outra forma para declarar.
     textoLongo('bio', 'SOBRE MIM', perfil.bio ?? '', {
-      linhas: 6,
+      linhas: 4,
       sugestao: 'O que você quer que as pessoas deste servidor saibam.',
     }),
+  ], { intervalo: 12 });
+
+  const aparencia = pilha([
+    grupo('Aparência'),
     // **Seletor e hexadecimal.** U23 pediu os dois juntos para o ESTILO, e a
     // mesma razão vale aqui: escolher uma cor num campo de texto é escolher
     // uma cor sem vê-la.
-    cor('accent', 'COR', acentoDe(perfil)),
+    cor('accent', 'COR', acento),
     escolha('effect', 'EFEITO', perfil.effect ?? 'none', EFEITOS),
-    separador(),
-    caixa(['Imagens'], { peso: 'forte', corpo: 11, opacidade: 0.8 }),
-    linha([
-      arquivo('avatar', 'ENVIAR RETRATO', {
-        // **Para quê, de que tipo, até quanto.** O produto usa a finalidade
-        // como título do diálogo do sistema, o tipo como filtro de extensões e
-        // o teto para recusar antes de ler. A auditoria de 20/09/2026 abriu
-        // este mesmo botão e leu «Escolha um arquivo para este MOD», com JSONs
-        // na lista.
-        finalidade: 'Escolha o retrato do seu perfil neste servidor',
-        tipos: ['imagem'],
-        limiteDeBytes: TETO_DO_RETRATO,
-      }),
-      arquivo('banner', 'ENVIAR FAIXA', {
-        finalidade: 'Escolha a faixa que aparece atrás do seu retrato',
-        tipos: ['imagem'],
-        limiteDeBytes: TETO_DA_FAIXA,
-      }),
-    ]),
-    ...(meuPerfil().avatar || meuPerfil().banner ? [linha([
-      botao('tirar-avatar', 'TIRAR RETRATO', !meuPerfil().avatar, { variante: 'discreta' }),
-      botao('tirar-banner', 'TIRAR FAIXA', !meuPerfil().banner, { variante: 'discreta' }),
-    ])] : []),
-  ]);
-
-  // A prévia usa **o mesmo desenho do cartão**, com o rascunho no lugar do que
-  // está gravado. Duas funções de desenho seriam duas verdades sobre o mesmo
-  // cartão, e a segunda discordaria da primeira no dia em que uma mudasse.
-  const previa = pilha([
-    caixa(['PRÉVIA'], { corpo: 11, peso: 'forte', opacidade: 0.7 }),
-    caixa(['Assim você aparece na lista de pessoas:'], { corpo: 11, opacidade: 0.6 }),
-    caixa(cartaoDaPreviaComRascunho(meu) ?? [caixa(['Sem nada escrito ainda.'], { opacidade: 0.6 })], {
-      preenchimento: 10,
-      borda: { largura: 1, cor: '#3a322a' },
-      raio: 6,
-      largura: 'total',
+    arquivo('avatar', 'RETRATO', {
+      // **Para quê, de que tipo, até quanto.** O produto usa a finalidade
+      // como título do diálogo do sistema, o tipo como filtro de extensões e
+      // o teto para recusar antes de ler. A auditoria de 20/09/2026 abriu
+      // este mesmo botão e leu «Escolha um arquivo para este MOD», com JSONs
+      // na lista.
+      finalidade: 'Escolha o retrato do seu perfil neste servidor',
+      tipos: ['imagem'],
+      limiteDeBytes: TETO_DO_RETRATO,
     }),
-    ...(aviso ? [caixa([aviso], { corpo: 11, cor: acentoDe(perfil) })] : []),
-  ], { intervalo: 8 });
+    arquivo('banner', 'FAIXA', {
+      finalidade: 'Escolha a faixa que aparece atrás do seu retrato',
+      tipos: ['imagem'],
+      limiteDeBytes: TETO_DA_FAIXA,
+    }),
+    ...(meuPerfil().avatar || meuPerfil().banner ? [caixa([
+      botao('tirar-avatar', 'TIRAR', !meuPerfil().avatar, { variante: 'discreta' }),
+      botao('tirar-banner', 'TIRAR FAIXA', !meuPerfil().banner, { variante: 'discreta' }),
+    ], { direcao: 'linha', intervalo: 8, quebra: 'sim' })] : []),
+  ], { intervalo: 12 });
 
   return [
-    // **Campos e prévia lado a lado, e empilhados só quando não couberem.**
-    //
-    // `base: 0` é o que divide: sem ele, cada coluna parte do tamanho do
-    // próprio conteúdo, o par não cabe na linha, e `quebra: 'sim'` as põe uma
-    // debaixo da outra — que é o que a validação nativa viu e chamou de
-    // «desperdiça altura».
-    //
-    // Com `base: 0` e uma largura mínima em cada, a quebra passa a acontecer
-    // pelo motivo certo: enquanto 300 + 260 couberem, elas dividem o espaço;
-    // quando não couberem, a linha quebra sozinha.
-    caixa([
-      caixa([formularioDoPerfil], { crescer: 1, base: 0, larguraMinima: 300 }),
-      caixa([previa], { crescer: 1, base: 0, larguraMinima: 260 }),
-    ], { direcao: 'linha', intervalo: 20, quebra: 'sim', alinhar: 'inicio' }),
+    previa,
+    separador(),
+    formulario('perfil', [
+      caixa([
+        caixa([identidade], { crescer: 1.4, base: 0, larguraMinima: 280 }),
+        caixa([aparencia], { crescer: 1, base: 0, larguraMinima: 220 }),
+      ], { direcao: 'linha', intervalo: 24, quebra: 'sim', alinhar: 'inicio' }),
+    ]),
+    ...(aviso ? [caixa([aviso], { corpo: 12, cor: acento })] : []),
     acoes([
       botao('descartar', perguntandoDescarte ? 'CONFIRMAR DESCARTE' : 'DESCARTAR',
         !mudou, { variante: perguntandoDescarte ? 'perigo' : 'discreta' }),
