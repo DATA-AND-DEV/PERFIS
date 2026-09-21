@@ -369,7 +369,7 @@ const PROPRIEDADES_DE_ESTILO = new Set([
   'direcao', 'alinhar', 'distribuir', 'quebra', 'crescer', 'encolher', 'base',
   'intervalo', 'preenchimento', 'margem',
   'largura', 'altura', 'larguraMinima', 'larguraMaxima', 'alturaMinima', 'alturaMaxima',
-  'colunas', 'posicao', 'recortar', 'proporcao',
+  'colunas', 'posicao', 'recortar', 'proporcao', 'linhasMaximas',
   'girar', 'escalar', 'mover', 'transicao', 'animacao',
 ]);
 
@@ -1216,7 +1216,7 @@ if (manifest.id === 'seele/perfis') {
     // A prévia continua lá; o rótulo «PRÉVIA» saiu. Ela abre a janela em
     // tamanho real, e o que diz que aquilo é uma prévia é a linha acima dela —
     // «Assim você aparece» — e não uma etiqueta sobre uma caixa.
-    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Assim você aparece/);
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Seu cartão na lista de pessoas/);
 
     // E o diálogo é um diálogo de verdade: ele pede confirmação ao fechar com
     // alteração pendente, em vez de descartar em silêncio.
@@ -1536,6 +1536,18 @@ if (manifest.id === 'seele/perfis') {
     });
     for (let i = 0; i < 12; i++) await settle();
     assert.match(JSON.stringify(c.superficie('perfis-editor')), /Escolha uma imagem/);
+  });
+
+  test('PERFIS: texto acima do limite aponta o campo e preserva o rascunho', async () => {
+    const w = world(); const c = client(w); await settle();
+    c.agir('abrir-editor'); await assentar();
+    c.fire({ nome: 'campo', chave: 'status', valor: 'x'.repeat(61) }); await assentar();
+    assert.match(c.controlesDe('perfis-editor').get('status').erro, /Status.*60.*61/);
+    const antes = c.requests.filter(r => r.body.op === 'save').length;
+    c.fire({ nome: 'botao', chave: 'gravar' }); await assentar();
+    assert.equal(c.requests.filter(r => r.body.op === 'save').length, antes);
+    assert.equal(c.controlesDe('perfis-editor').get('status').valor.length, 61);
+    assert.match(JSON.stringify(c.superficie('perfis-editor')), /Status.*60/);
   });
 
   test('PERFIS: consulta pessoas em lotes de no máximo 32', async () => {

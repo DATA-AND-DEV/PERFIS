@@ -124,6 +124,25 @@ function interfaceMod(id, titulo, intervalo = 4000) {
     }
   };
 
+  /** Uma atualização em voo e apenas o estado mais recente aguardando. */
+  function agruparAtualizacoes(atualizar) {
+    let emVoo = null;
+    let proxima = null;
+    return (...args) => {
+      proxima = args;
+      if (!emVoo) {
+        emVoo = Promise.resolve().then(async () => {
+          while (proxima) {
+            const atuais = proxima;
+            proxima = null;
+            await atualizar(...atuais);
+          }
+        }).finally(() => { emVoo = null; });
+      }
+      return emVoo;
+    };
+  }
+
   // ---- as superfícies ----
   //
   // **Ausente, e não recusado.** Quando o pacote declara `api: 3`, o prelúdio
@@ -287,7 +306,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar, dizer,
+    request, iniciar, desenhar, dizer, agruparAtualizacoes,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle

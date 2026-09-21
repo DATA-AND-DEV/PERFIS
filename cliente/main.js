@@ -127,6 +127,25 @@ function interfaceMod(id, titulo, intervalo = 4000) {
     }
   };
 
+  /** Uma atualização em voo e apenas o estado mais recente aguardando. */
+  function agruparAtualizacoes(atualizar) {
+    let emVoo = null;
+    let proxima = null;
+    return (...args) => {
+      proxima = args;
+      if (!emVoo) {
+        emVoo = Promise.resolve().then(async () => {
+          while (proxima) {
+            const atuais = proxima;
+            proxima = null;
+            await atualizar(...atuais);
+          }
+        }).finally(() => { emVoo = null; });
+      }
+      return emVoo;
+    };
+  }
+
   // ---- as superfícies ----
   //
   // **Ausente, e não recusado.** Quando o pacote declara `api: 3`, o prelúdio
@@ -290,7 +309,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar, dizer,
+    request, iniciar, desenhar, dizer, agruparAtualizacoes,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle
@@ -336,7 +355,7 @@ const {
   caixa, pilha, grade, separador, espaco,
   formulario, acoes, textoLongo, cor, retrato, distintivo, arquivo, midia,
   request, iniciar, temSuperficies, temContribuicoes,
-  pagina, dialogo, contribuir, entrada, avisar,
+  pagina, dialogo, contribuir, entrada, avisar, agruparAtualizacoes,
 } = interfaceMod('seele/perfis', 'PERFIS');
 
 /**
@@ -475,6 +494,7 @@ function cartaoDaPessoa(id) {
   const apelido = apelidoDe(id);
   const pronome = String(perfil.pronouns ?? '').trim();
   const status = String(perfil.status ?? '').trim();
+  const bio = String(perfil.bio ?? '').trim();
   const animacao = ANIMACAO_DO_EFEITO[perfil.effect] ?? 'nenhuma';
 
   const dentro = [];
@@ -495,7 +515,7 @@ function cartaoDaPessoa(id) {
       ? [midia('faixa', { doServidor: imagemDoServidor(id, 'banner'), descricao: 'faixa de ' + apelido })]
       : [],
     {
-      altura: 56,
+      altura: 44,
       recortar: 'cortar',
       largura: 'total',
       ...(perfil.banner ? {} : {
@@ -511,7 +531,7 @@ function cartaoDaPessoa(id) {
   const identidade = [
     retrato('retrato', {
       inicial: inicialDe(perfil, id),
-      formato: 'circulo',
+      formato: 'quadrado',
       descricao: exibido ? 'retrato de ' + exibido : 'retrato de ' + apelido,
       ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
       // A cor escolhida entra na borda do retrato: é a peça de identidade mais
@@ -523,7 +543,7 @@ function cartaoDaPessoa(id) {
         largura: 52,
         altura: 52,
         posicao: 'relativa',
-        // O disco precisa **ser** um disco: fundo mais claro que o cartão e um
+        // O retrato precisa se destacar: fundo mais claro que o cartão e um
         // anel da cor escolhida. Com o fundo igual ao do cartão ele só
         // aparecia onde cruzava a faixa, e lia como um recorte, não como um
         // retrato.
@@ -535,61 +555,35 @@ function cartaoDaPessoa(id) {
     pilha([
       // O nome exibido quando há; senão o apelido. Nunca os dois: repeti-los
       // seria a linha dizendo duas vezes a mesma coisa.
-      caixa([exibido || apelido], { cor: acento, peso: 'forte', corpo: 15 }),
+      caixa([exibido || apelido], { cor: acento, peso: 'forte', corpo: 15, linhasMaximas: 2 }),
       ...(pronome || status ? [caixa([
         ...(pronome ? [distintivo([pronome], {
           borda: { largura: 1, cor: '#3a322a' },
           corpo: 10,
           opacidade: 0.9,
         })] : []),
-        ...(status ? [distintivo([status], {
-          borda: { largura: 1, cor: acento },
-          cor: acento,
-          corpo: 10,
+        ...(status ? [caixa([status], {
+          cor: '#c9c1ae',
+          corpo: 12, linhasMaximas: 2, largura: 'total',
         })] : []),
       ], { direcao: 'linha', intervalo: 6, quebra: 'sim' })] : []),
     ], { intervalo: 6, crescer: 1, base: 0 }),
   ];
 
-  const bio = String(perfil.bio ?? '').trim();
+  // Identidade em fluxo: nomes longos não sobem sobre a faixa nem deixam
+  // uma lacuna vazia no lugar de uma transformação visual.
+  dentro.push(caixa(identidade, {
+    direcao: 'linha', alinhar: 'inicio', intervalo: 12,
+    preenchimento: 12, largura: 'total', margem: 0,
+  }));
 
-  // A linha da identidade sobe sobre a faixa. `mover` é o que a API oferece
-  // no lugar do posicionamento absoluto da versão antiga.
-  //
-  // Ela vai dentro de uma caixa com respiro: a faixa encosta nas bordas — ela
-  // é o fundo —, e o que vem depois dela não pode encostar. Sem esta caixa o
-  // retrato saía cortado pela borda esquerda do cartão.
-  dentro.push(caixa(
-    [caixa(identidade, {
-      direcao: 'linha',
-      alinhar: 'fim',
-      intervalo: 10,
-      mover: { x: 0, y: -22 },
-      margem: 0,
-      // **Na frente da faixa.** A animação da faixa cria contexto de
-      // empilhamento, e sem `posicao` o retrato subia para trás dela — metade
-      // do círculo sumia dentro do gradiente.
-      posicao: 'relativa',
-    })],
-    { preenchimento: 10, largura: 'total', margem: 0 },
-  ));
-
-  // **A biografia entra no cartão.** Ela é o único campo do editor que não
-  // tinha resposta visual nenhuma: digitava-se, e a prévia continuava igual.
-  // Três linhas no máximo — o cartão mora numa lista de pessoas, e uma
-  // biografia inteira ali empurraria as outras para fora da tela.
-  if (bio) {
-    dentro.push(caixa([bio], {
-      corpo: 12,
-      cor: '#c9c1ae',
-      entrelinha: 1.45,
-      margem: 0,
-      preenchimento: 10,
-      mover: { x: 0, y: -18 },
-      recortar: 'cortar',
-      alturaMaxima: 58,
-    }));
-  }
+  // Resumo com reticências; a biografia inteira continua no perfil aberto.
+  if (bio) dentro.push(caixa([caixa([bio], {
+    corpo: 12, cor: '#c9c1ae', entrelinha: 1.45, linhasMaximas: 2,
+  })], { preenchimento: 10, margem: 0 }));
+  dentro.push(caixa(['Ver perfil completo'], {
+    corpo: 11, cor: '#b6aa97', preenchimento: 10, margem: 0,
+  }));
 
   // Quem não escreveu nada não ganha cartão: uma moldura vazia ao lado de um
   // nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
@@ -682,7 +676,7 @@ function oDiretorio() {
       caixa([
         retrato('r-' + id, {
           inicial: inicialDe(perfil, id),
-          formato: 'circulo',
+          formato: 'quadrado',
           descricao: 'retrato de ' + apelidoDe(id),
           ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
           estilo: { borda: { largura: 2, cor: acentoDe(perfil) }, largura: 44, altura: 44 },
@@ -694,17 +688,17 @@ function oDiretorio() {
         ], { intervalo: 2, crescer: 1 }),
       ], { direcao: 'linha', alinhar: 'centro', intervalo: 10 }),
       String(perfil.status ?? '').trim()
-        ? caixa([String(perfil.status).trim()], { corpo: 11, opacidade: 0.85 })
-        : null,
+        ? caixa([String(perfil.status).trim()], { corpo: 12, linhasMaximas: 2, alturaMinima: 36, crescer: 1 })
+        : caixa([], { alturaMinima: 36, crescer: 1 }),
       acoes([
         botao('abrir-' + id, eu ? 'EDITAR MEU PERFIL' : 'VER PERFIL',
           false, { variante: eu ? 'primaria' : 'secundaria' }),
       ]),
     ].filter(Boolean), {
-      intervalo: 8,
-      preenchimento: 12,
+      direcao: 'coluna', intervalo: 12,
+      preenchimento: 16,
       borda: { largura: 1, cor: '#3a322a' },
-      raio: 6,
+      raio: 0,
     });
   });
 
@@ -751,14 +745,14 @@ function osDetalhes(id) {
   if (perfil.banner) {
     partes.push(caixa(
       [midia('d-faixa', { doServidor: imagemDoServidor(id, 'banner'), descricao: 'faixa de ' + apelido })],
-      { altura: 120, recortar: 'cortar', raio: 6 },
+      { altura: 120, recortar: 'cortar', raio: 0 },
     ));
   }
 
   partes.push(caixa([
     retrato('d-retrato', {
       inicial: inicialDe(perfil, id),
-      formato: 'circulo',
+      formato: 'quadrado',
       descricao: 'retrato de ' + apelido,
       ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
       estilo: { largura: 72, altura: 72, borda: { largura: 3, cor: acento } },
@@ -781,7 +775,7 @@ function osDetalhes(id) {
   }));
 
   if (String(perfil.status ?? '').trim()) {
-    partes.push(distintivo([String(perfil.status).trim()],
+    partes.push(caixa([String(perfil.status).trim()],
       { borda: { largura: 1, cor: acento }, cor: acento }));
   }
 
@@ -858,13 +852,13 @@ function oEditor() {
   // O que diz que aquilo é uma prévia é a linha acima dela, não um quadro.
   const previa = pilha([
     caixa([
-      grupo('Assim você aparece'),
+      grupo('Seu cartão na lista de pessoas'),
       caixa([mudou ? 'ainda não gravado' : 'como está gravado'], {
         corpo: 11,
         cor: mudou ? acento : '#908574',
       }),
     ], { direcao: 'linha', alinhar: 'fim', distribuir: 'entre', intervalo: 12, quebra: 'sim' }),
-    ...(cartao ?? [caixa([
+    caixa(cartao ?? [caixa([
       'Escreva um nome, escolha uma cor, e o cartão aparece aqui.',
     ], {
       preenchimento: 20,
@@ -872,23 +866,24 @@ function oEditor() {
       cor: '#908574',
       borda: { largura: 1, estilo: 'tracejada', cor: '#3a322a' },
       largura: 'total',
-    })]),
+    })], { largura: 'total', larguraMaxima: 288 }),
   ], { intervalo: 10 });
 
   const identidade = pilha([
     grupo('Identidade'),
-    campo('displayName', 'NOME EXIBIDO', perfil.displayName ?? ''),
+    campo('displayName', 'NOME EXIBIDO', perfil.displayName ?? '', { erro: erroDeTexto('displayName', perfil) }),
     // Pronome e status dividem a linha: são dois campos curtos, e um deles
     // sozinho numa linha de 900px é uma linha dizendo que sobrou espaço.
     caixa([
-      caixa([campo('pronouns', 'PRONOMES', perfil.pronouns ?? '')],
+      caixa([campo('pronouns', 'PRONOMES', perfil.pronouns ?? '', { erro: erroDeTexto('pronouns', perfil) })],
         { crescer: 1, base: 0, larguraMinima: 160 }),
-      caixa([campo('status', 'STATUS', perfil.status ?? '')],
+      caixa([campo('status', 'STATUS', perfil.status ?? '', { erro: erroDeTexto('status', perfil) })],
         { crescer: 1, base: 0, larguraMinima: 160 }),
     ], { direcao: 'linha', intervalo: 16, quebra: 'sim' }),
     // **Multilinha.** U20: «"Sobre mim" é input de uma linha.» Não era uma
     // escolha deste pacote: a API 3 não tinha outra forma para declarar.
     textoLongo('bio', 'SOBRE MIM', perfil.bio ?? '', {
+      erro: erroDeTexto('bio', perfil),
       linhas: 4,
       sugestao: 'O que você quer que as pessoas deste servidor saibam.',
     }),
@@ -983,7 +978,7 @@ async function abrirDetalhes(id) {
   telas.detalhes ??= await dialogo('perfis-detalhes', 'Perfil', {
     tamanho: { largura: 520 },
   });
-  await telas.detalhes.titulo('Perfil de ' + apelidoDe(aberto));
+  await telas.detalhes.titulo('Perfil de ' + (ultimo.perfis[aberto]?.displayName?.trim() || apelidoDe(aberto)));
   await telas.detalhes.montar(osDetalhes(aberto));
   await telas.detalhes.mostrar();
 }
@@ -1004,14 +999,14 @@ async function abrirEditor() {
 }
 
 /** Redesenha a tela que estiver aberta, sem ir ao servidor. */
-async function repintarTelas() {
+const repintarTelas = agruparAtualizacoes(async () => {
   if (telas.editor) {
     await telas.editor.montar(oEditor());
     await telas.editor.suja(mudouOPerfil());
   }
   if (telas.detalhes && aberto) await telas.detalhes.montar(osDetalhes(aberto));
   if (telas.diretorio) await telas.diretorio.montar(oDiretorio());
-}
+});
 
 // --------------------------------------------------------- o envio de imagem
 
@@ -1098,7 +1093,7 @@ function aRegiao() {
     caixa([
       retrato('meu-retrato', {
         inicial: inicialDe(perfil, meu),
-        formato: 'circulo',
+        formato: 'quadrado',
         descricao: 'seu retrato',
         ...(perfil.avatar ? { doServidor: imagemDoServidor(meu, 'avatar') } : {}),
         estilo: { borda: { largura: 2, cor: acentoDe(perfil) } },
@@ -1133,8 +1128,18 @@ function oDiretorioNaFaixa() {
 
 // --------------------------------------------------------------- gravar
 
+const LIMITES_DE_TEXTO = { displayName: 40, pronouns: 30, status: 60, bio: 280 };
+const NOMES_DE_TEXTO = { displayName: 'Nome exibido', pronouns: 'Pronomes', status: 'Status', bio: 'Sobre mim' };
+function erroDeTexto(chave, perfil) {
+  const tamanho = String(perfil[chave] ?? '').length;
+  const teto = LIMITES_DE_TEXTO[chave];
+  return tamanho > teto ? `${NOMES_DE_TEXTO[chave]}: use até ${teto} caracteres (atual: ${tamanho}).` : '';
+}
+
 async function gravar(canal) {
   const perfil = emEdicao();
+  const erro = Object.keys(LIMITES_DE_TEXTO).map(chave => erroDeTexto(chave, perfil)).find(Boolean);
+  if (erro) throw new Error(erro);
   aviso = 'gravando…';
   const resposta = await request(canal, {
     op: 'save',
