@@ -110,11 +110,16 @@ const chaveDoRascunho = () => String(ultimo?.canal ?? '-') + ':' + String(ultimo
 /** O rascunho desta entidade, ou nada quando ninguém editou. */
 const meuRascunho = () => rascunhos.get(chaveDoRascunho()) ?? null;
 
-const emEdicao = () => meuRascunho() ?? meuPerfil();
+const emEdicao = () => {
+  const gravado = meuPerfil(), rascunho = meuRascunho();
+  // Imagens são gravadas ao enviar; o rascunho conserva apenas a edição de
+  // texto/aparência e nunca esconde uma foto já enviada ou já removida.
+  return rascunho ? { ...rascunho, avatar: gravado.avatar, banner: gravado.banner, revision: gravado.revision } : gravado;
+};
 
 const mudouOPerfil = () => {
   const guardado = meuRascunho();
-  return guardado !== null && JSON.stringify(guardado) !== JSON.stringify(meuPerfil());
+  return guardado !== null && JSON.stringify(emEdicao()) !== JSON.stringify(meuPerfil());
 };
 
 /** O apelido do servidor, que é a identidade que o produto conhece. */
@@ -136,7 +141,7 @@ const inicialDe = (perfil, id) =>
 /** De onde o produto busca os bytes de uma imagem deste perfil. */
 const imagemDoServidor = (id, slot) => ({
   canal: ultimo.canal,
-  pedido: { op: 'asset', person: String(id), slot },
+  pedido: { op: 'asset', person: String(id), slot, path: ultimo.perfis[String(id)]?.[slot] ?? null },
   campo: 'image',
 });
 

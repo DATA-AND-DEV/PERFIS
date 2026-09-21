@@ -1417,6 +1417,23 @@ if (manifest.id === 'seele/perfis') {
     assert.deepEqual(c.soltos, [id], 'o arquivo escolhido não foi devolvido');
   });
 
+  test('PERFIS: foto e faixa atualizam a prévia com texto ainda não gravado', async () => {
+    const w = world(), c = client(w); await settle();
+    c.agir('abrir-editor'); await assentar();
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Rascunho preservado' });
+    await assentar();
+    for (const slot of ['avatar', 'banner', 'avatar']) {
+      const anterior = w.call({ op: 'view' }, '2').profiles['2'][slot];
+      c.escolher(slot, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(30, 7)]));
+      for (let i = 0; i < 30; i++) await settle();
+      const perfil = w.call({ op: 'view' }, '2').profiles['2'];
+      assert.ok(perfil[slot]); assert.notEqual(perfil[slot], anterior);
+      const arvore = JSON.stringify(c.superficie('perfis-editor'));
+      assert.ok(arvore.includes(perfil[slot]), 'a prévia não identifica a imagem recém-gravada');
+      assert.equal(c.controlesDe('perfis-editor').get('bio').valor, 'Rascunho preservado');
+    }
+  });
+
   // ---- o rascunho pertence à pessoa, e não ao momento (U26) ----
   //
   // `FECHAR` apagava `rascunho`. Quem escrevesse a biografia e fechasse a

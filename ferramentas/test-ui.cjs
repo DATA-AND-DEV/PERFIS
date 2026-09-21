@@ -154,6 +154,41 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
         'a superfície não diz de qual MOD ela é');
     }
 
+    if (manifest.id === 'seele/perfis') {
+      await aba.setViewportSize({ width: 1280, height: 900 });
+      await aba.getByRole('button', { name: 'EDITAR MEU PERFIL', exact: true }).click();
+      const editor = aba.locator('.dialogo-de-mod');
+      await editor.getByLabel('SOBRE MIM', { exact: true }).fill('Rascunho com foto nova');
+      let ultimaFoto;
+      for (const [slot, rotulo, cor] of [
+        ['avatar', 'RETRATO', '#ff0000'], ['banner', 'FAIXA', '#0000ff'], ['avatar', 'RETRATO', '#00ff00'],
+      ]) {
+        const uri = await aba.evaluate(cor => {
+          const c = document.createElement('canvas'); c.width = 64; c.height = 32;
+          const ctx = c.getContext('2d'); ctx.fillStyle = cor; ctx.fillRect(0, 0, 64, 32);
+          return c.toDataURL('image/png');
+        }, cor);
+        const bytes = Buffer.concat([Buffer.from(uri.split(',')[1], 'base64'), Buffer.alloc(70000)]);
+        const escolha = aba.waitForEvent('filechooser');
+        await editor.getByRole('button', { name: new RegExp('^' + rotulo + '( |$)') }).click();
+        await (await escolha).setFiles({ name: slot + '.png', mimeType: 'image/png', buffer: bytes });
+        const esperado = 'data:image/png;base64,' + bytes.toString('base64');
+        await aba.waitForFunction(({ esperado }) => [...document.querySelectorAll('.dialogo-de-mod img')]
+          .some(img => img.src === esperado && img.complete && img.naturalWidth === 64), { esperado });
+        assert.equal(await editor.getByLabel('SOBRE MIM', { exact: true }).inputValue(), 'Rascunho com foto nova');
+        if (slot === 'avatar') ultimaFoto = esperado;
+      }
+      await aba.waitForFunction(esperado => [...document.querySelectorAll('#lista-roster img')]
+        .some(img => img.src === esperado && img.complete && img.naturalWidth === 64), ultimaFoto);
+      // O rascunho permanece; gravá-lo fecha a verificação sem confirmação pendente.
+      await editor.getByRole('button', { name: 'GRAVAR', exact: true }).click();
+      await editor.getByText('gravado', { exact: true }).waitFor();
+      await editor.locator('.dialogo-de-mod-corpo').evaluate(no => { no.scrollTop = 0; });
+      await aba.screenshot({ path: process.env.PERFIS_SCREENSHOT || path.join(temp, 'perfis-imagens.png') });
+      await editor.locator('.superficie-de-mod-sair').click();
+      console.log('PERFIS: foto, faixa e substituição decodificadas no renderer; rascunho preservado.');
+    }
+
     // ---- sair solta tudo ----
     //
     // **A superfície sai primeiro.** Desde que o ESTILO voltou a abrir num

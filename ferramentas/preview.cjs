@@ -228,6 +228,12 @@ const pagina = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
  * escritas aqui em vez de recortadas de lá: recortar por índice de string foi
  * exatamente o que deixou este laboratório obsoleto sem ninguém perceber.
  */
+// A paginação usa o laço do produto; a conversão nativa é simulada abaixo
+// e tem cobertura própria em Rust. Não devolvemos mais só a primeira página.
+const carregarMidiaDoProduto = doProduto('base.js')
+  .split('carregarMidiaDoServidor: async (canal, pedido, campo) => {')[1]?.split('\n    },')[0];
+if (!carregarMidiaDoProduto) throw new Error('carregarMidiaDoServidor não encontrado no produto');
+
 const ponte = `const id=${JSON.stringify(manifest.id)};
 const $=n=>document.getElementById(n);
 const elemento=(tag,classe,dentro)=>{const no=document.createElement(tag);if(classe)no.className=classe;if(dentro!==undefined)no.textContent=dentro;return no;};
@@ -305,13 +311,20 @@ const dono={
     return {uri,papel,bytes};
   },
   carregarMidiaDoServidor:async(canal,pedido,campo)=>{
-    const r=await fetch('/pedido',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({servidor,pessoa,canal,corpo:pedido})});
-    const resposta=await r.json();
-    const texto=resposta[campo];
-    if(typeof texto!=='string')throw new Error('sem-bytes');
-    const papel=texto.startsWith('data:audio')?'som':'imagem';
-    return {uri:texto,papel,bytes:texto.length};
+    const geracaoDaSessao=1, daGeracaoDePe=()=>true, meu=()=>true, mod={id};
+    const PEDACOS_DE_MIDIA=256, TETO_DE_MIDIA_BASE64=4*Math.ceil(10*1024*1024/3)+128;
+    const pedirAoServidor=async(_id,canal,corpo)=>{
+      const r=await fetch('/pedido',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({servidor,pessoa,canal,corpo})});
+      return r.json();
+    };
+    const invoke=async(_cmd,{base64})=>{
+      const conteudo=base64.startsWith('data:')?base64.slice(base64.indexOf(',')+1):base64;
+      const bytes=atob(conteudo).length;
+      if(bytes>10*1024*1024)throw new Error('arquivo-grande-demais');
+      return {uri:base64,papel:'imagem',bytes};
+    };
+    ${carregarMidiaDoProduto}
   },
 };
 const escolhidos=[];
