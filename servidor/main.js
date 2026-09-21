@@ -13,8 +13,7 @@
     if (!/^#[0-9a-f]{6}$/i.test(raw.accent || '') || !effects.includes(raw.effect)) fail('Efeito ou cor inválidos.');
     return {...old,revision:old.revision+1,displayName:text(raw.displayName,40),pronouns:text(raw.pronouns,30),bio:text(raw.bio,280),status:text(raw.status,60),accent:raw.accent.toLowerCase(),effect:raw.effect};
   }
-  // New assets are a tiny index + fixed-size fragments. Neither QuickJS nor
-  // arquivos.ler/escrever ever receives the entire 10 MiB image.
+  // Leitura de imagens legadas em fragmentos; novos envios usam volume binário.
   function indexOf(raw){return raw?.startsWith('{')?JSON.parse(raw):null;}
   function sliceAsset(path,raw,offset){
     const index=indexOf(raw);if(!index)return raw?.slice(offset,offset+ASSET_PART)||null;
@@ -41,6 +40,11 @@
           const item=typeof entry==='string'?{path:entry,next:0}:entry;
           if(referenced.includes(item.path))continue;
           if(!budget){pending.push(item);continue;}
+          if(item.path.startsWith('volume:')) {
+            const nome=item.path.slice(7);
+            if(volume.tamanho(nome)!==null&&!volume.apagar(nome))pending.push(item);
+            budget--; continue;
+          }
           const raw=arquivos.ler(item.path);if(raw===null)continue;
           const index=indexOf(raw);
           const count=index?.parts||0;
@@ -64,6 +68,12 @@
         const id=person(r.person),slot=r.slot;
         if (!['avatar','banner'].includes(slot)) fail('Imagem inválida.');
         const path=store[id]?.[slot];
+        if (path?.startsWith('volume:')) {
+          if (r.path && r.path !== path) fail('A imagem mudou. Abra o perfil novamente.');
+          const nome=volume.servir(path.slice(7));
+          if (!nome) fail('Imagem indisponível.');
+          return JSON.stringify({ok:true,volume:nome});
+        }
         const raw=path ? arquivos.ler(path) : null,index=indexOf(raw);
         const total=index?.length||raw?.length||0;
         if(r.offset!==undefined){
@@ -84,8 +94,29 @@
       if (r.person!==undefined && r.person!==me) fail('Você só pode editar o próprio perfil.');
       if (ctx.write!==true) fail('Você não tem permissão de escrita neste canal.');
       if (!store[me] && Object.keys(store).length>=MAX_PROFILES) fail('Este servidor atingiu o limite de 128 perfis.');
+      if (r.op==='upload-finish') {
+        const up=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
+        if (!up || up.transport!=='volume' || up.token!==r.token) fail('Upload expirado ou fora de ordem.');
+        const bytes=volume.tamanho(up.path.slice(7));
+        if (bytes!==up.bytes) fail('Imagem incompleta. Escolha novamente.');
+        const previous=own[up.slot];
+        store[me]={...own,[up.slot]:up.path,revision:own.revision+1};
+        dados.profiles=JSON.stringify(store); delete dados['upload-'+me]; retire(previous);
+        return JSON.stringify({ok:true,finished:true,profile:store[me]});
+      }
       if (r.op==='upload-start') {
         if (!['avatar','banner'].includes(r.slot)) fail('Imagem inválida.');
+        if (r.transporte==='volume') {
+          if(typeof volume==='undefined' || typeof volume.tamanho!=='function') fail('Atualize o SEELE de quem hospeda para enviar imagens por fluxo.');
+          if(!Number.isInteger(r.bytes)||r.bytes<1||r.bytes>LIMITS[r.slot]) fail('Use uma imagem de até 10 MiB.');
+          const token=String(mundo.agora())+'-'+Math.random().toString(36).slice(2,14);
+          const path='images/'+me+'-'+token;
+          if(!volume.esperar(token,path,['png','jpeg','webp','gif'],600)) fail('Não foi possível iniciar o envio.');
+          const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
+          dados['upload-'+me]=JSON.stringify({transport:'volume',token,path:'volume:'+path,slot:r.slot,bytes:r.bytes});
+          if(old)retire(old.path);
+          return JSON.stringify({ok:true,token});
+        }
         if (!Number.isInteger(r.length) || r.length<1 || r.length>encodedLimit(r.slot)) fail('Use uma imagem de até 10 MiB.');
         const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
         const token=String(mundo.agora())+'-'+Math.random().toString(36).slice(2,14);

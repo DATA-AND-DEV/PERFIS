@@ -22,9 +22,14 @@ const serverSource = fs.readFileSync(path.join(root, manifest.server), 'utf8');
  * por `escritaDireta`, e essa é a diferença que o nome deixa visível.
  */
 function world() {
-  const data = {}, files = new Map();
+  const data = {}, files = new Map(), volumes = new Map(), esperas = new Map();
   const call = (body, person = '1', channel = 1) => {
-    const sandbox = vm.createContext({ dados: data, mundo: { agora: () => 100 }, arquivos: { ler: p => files.get(p) ?? null, escrever: (p, v) => (files.set(p, v), true), apagar: p => files.delete(p), listar: () => [...files.keys()] } });
+    const sandbox = vm.createContext({ volume: {
+      esperar: (token, path) => { esperas.set(token, { person, path }); return true; },
+      tamanho: path => volumes.get(path)?.length ?? null,
+      servir: path => volumes.has(path) ? path : null,
+      apagar: path => volumes.delete(path),
+    }, dados: data, mundo: { agora: () => 100 }, arquivos: { ler: p => files.get(p) ?? null, escrever: (p, v) => (files.set(p, v), true), apagar: p => files.delete(p), listar: () => [...files.keys()] } });
     vm.runInContext(serverSource, sandbox);
     return JSON.parse(sandbox.aoPedir(JSON.stringify({ person, channel, admin: person === '1', write: true }), JSON.stringify(body)));
   };
@@ -40,7 +45,13 @@ function world() {
     const revision = atual.campaign ? atual.campaign.revision : 0;
     return call({ revision, nonce: 'semente-' + (++serial), ...body }, person, channel);
   };
-  return { data, call, escritaDireta };
+  return { data, call, escritaDireta, volumes,
+    enviar: (token, bytes, person) => {
+      const espera = esperas.get(token);
+      assert.equal(espera?.person, person); esperas.delete(token);
+      volumes.set(espera.path, Buffer.from(bytes));
+    },
+  };
 }
 function client(w, options = {}) {
   const regions = [], themes = [], requests = [], timers = [], errors = [], cartoes = [], pedidosDeCartao = [];
@@ -77,6 +88,7 @@ function client(w, options = {}) {
         return bytes.subarray(inicio, inicio + 65535).toString('base64');
       },
       soltar: async arquivo => { escolhidos.delete(arquivo); soltos.push(arquivo); },
+      ...(options.volume ? { enviar: async (arquivo, token) => w.enviar(token, escolhidos.get(arquivo), String(snapshot.me)) } : {}),
       // A única superfície fora da região: uma declaração por pessoa, na mesma
       // gramática, montada pelo renderer do produto na lista dele. Os limites e
       // as recusas aqui são os de `mods-regiao.js` — um MOD que ponha um botão
@@ -335,7 +347,7 @@ const CHAVES_DA_FORMA = {
   tela: ['chave', 'largura', 'altura', 'figuras', 'tracos', 'fundo'],
   midia: ['chave', 'fonte', 'doServidor', 'descricao', 'tocando'],
   // ---- API 4: composição ----
-  caixa: ['dentro'], pilha: ['dentro'], grade: ['dentro'], rolagem: ['dentro'],
+  caixa: ['chave', 'dentro', 'fundoDeMidia'], pilha: ['dentro'], grade: ['dentro'], rolagem: ['dentro'],
   separador: [], espaco: [],
   // ---- API 4: controle ----
   formulario: ['chave', 'dentro', 'erro'],
@@ -459,7 +471,7 @@ const content = c => JSON.stringify(c.regions.at(-1) ?? null) + ' ' + JSON.strin
 test('o cliente final executa sem DOM e só consulta o próprio servidor', async () => {
   const c = client(world()); await settle();
   // O pacote declara uma API que este SEELE executa — ver `APIS_ACEITAS`.
-  assert.ok([3, 4].includes(manifest.api), 'manifesto declara API ' + manifest.api);
+  assert.ok([3, 4, 5].includes(manifest.api), 'manifesto declara API ' + manifest.api);
   // **Ele desenhou alguma coisa**, e onde ele desenha depende da versão: na
   // API 3 é a região; na 4 é a entrada de navegação, o cartão ou a superfície.
   // Exigir a região aqui exigiria de volta a faixa permanente que N2 tirou.
@@ -1238,14 +1250,14 @@ if (manifest.id === 'seele/perfis') {
     assert.ok(meu, 'a pessoa 2 não ganhou cartão: ' + JSON.stringify(cartoes));
     const textos = JSON.stringify(meu);
     assert.match(textos, /Lia da Torre/, 'o nome exibido não entrou: ' + textos);
-    assert.match(textos, /ela\/dela/, 'o pronome não entrou: ' + textos);
-    assert.match(textos, /jogando/, 'o status não entrou: ' + textos);
+    assert.doesNotMatch(textos, /ela\/dela/, 'o pronome sobrecarregou a lateral');
+    assert.doesNotMatch(textos, /jogando/, 'o status sobrecarregou a lateral');
 
     // **U27 pelo nome.** A cor e o efeito eram lidos e gravados e não apareciam
     // em lugar nenhum da árvore visual. Agora a cor é a borda do retrato e o
     // efeito é a animação dele.
     assert.match(textos, /#a78bfa/, 'a cor escolhida continua sem aparecer: ' + textos);
-    assert.match(textos, /"animacao"/, 'o efeito escolhido continua sem aparecer: ' + textos);
+    assert.equal(meu[0].estilo.altura, 44, 'o cartão deixou de ser compacto');
     assert.ok(meu.some(() => true) && textos.includes('"retrato"'),
       'o cartão não tem retrato: ' + textos);
 
@@ -1431,6 +1443,24 @@ if (manifest.id === 'seele/perfis') {
       const arvore = JSON.stringify(c.superficie('perfis-editor'));
       assert.ok(arvore.includes(perfil[slot]), 'a prévia não identifica a imagem recém-gravada');
       assert.equal(c.controlesDe('perfis-editor').get('bio').valor, 'Rascunho preservado');
+    }
+  });
+
+  test('PERFIS: 10 MiB usam um fluxo e três pedidos pequenos, inclusive ao substituir', async () => {
+    const w = world(), c = client(w, { volume: true }); await settle();
+    c.agir('abrir-editor'); await assentar();
+    for (const slot of ['avatar', 'banner', 'avatar']) {
+      const png = Buffer.alloc(10 * 1024 * 1024, 7); Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+      const inicio = c.requests.length;
+      c.escolher(slot, png); for (let i = 0; i < 40; i++) await settle();
+      const perfil = w.call({ op: 'view' }, '2').profiles['2'];
+      assert.ok(perfil[slot].startsWith('volume:'));
+      assert.deepEqual(w.volumes.get(perfil[slot].slice(7)), png);
+      const pedidos = c.requests.slice(inicio).map(x => x.body);
+      assert.equal(pedidos.filter(p => p.op === 'upload-part').length, 0);
+      assert.equal(pedidos.filter(p => p.op.startsWith('upload-')).length, 2);
+      assert.ok(JSON.stringify(pedidos).length < 2000);
+      assert.match(JSON.stringify(c.superficie('perfis-editor')), /"transporte":"volume"/);
     }
   });
 

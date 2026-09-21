@@ -133,7 +133,9 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
             .get("api")
             .and_then(serde_json::Value::as_u64)
             .ok_or("o manifesto não declara `api`")?;
-        let capacidades = if api >= 4 {
+        let capacidades = if api >= 5 {
+            r#"["regiao","tema","cartoes","arquivo","superficies","contribuicoes","estilos","classes","volume"]"#
+        } else if api >= 4 {
             r#"["regiao","tema","cartoes","arquivo","superficies","contribuicoes","estilos","classes"]"#
         } else {
             r#"["regiao","tema","cartoes","arquivo"]"#

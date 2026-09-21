@@ -79,7 +79,7 @@ const preludio = preludioDoExecutor();
 function capacidadesDaApi(api) {
   if (api >= 4) {
     return ['regiao', 'tema', 'cartoes', 'arquivo',
-      'superficies', 'contribuicoes', 'estilos', 'classes'];
+      'superficies', 'contribuicoes', 'estilos', 'classes', ...(api >= 5 ? ['volume'] : [])];
   }
   if (api === 3) return ['regiao', 'tema', 'cartoes', 'arquivo'];
   return [];
@@ -91,7 +91,7 @@ const mundos = new Map();
 
 /** O estado de um servidor simulado, criado na primeira vez que alguém fala. */
 function mundoDe(chave) {
-  if (!mundos.has(chave)) mundos.set(chave, { data: {}, files: new Map() });
+  if (!mundos.has(chave)) mundos.set(chave, { data: {}, files: new Map(), volumes: new Map(), esperas: new Map() });
   return mundos.get(chave);
 }
 
@@ -103,6 +103,12 @@ function aoPedir(chaveDoMundo, contexto, pedido) {
   const ctx = vm.createContext({
     dados,
     mundo: { agora: () => Math.floor(Date.now() / 1000) },
+    volume: {
+      esperar: (token, nome) => (mundo.esperas.set(token, { nome, pessoa: contexto.person }), true),
+      tamanho: nome => mundo.volumes.get(nome)?.length ?? null,
+      servir: nome => mundo.volumes.has(nome) ? nome : null,
+      apagar: nome => mundo.volumes.delete(nome),
+    },
     arquivos: {
       ler: p => arquivos.get(p) ?? null,
       escrever: (p, v) => (arquivos.set(p, v), true),
@@ -318,7 +324,13 @@ const dono={
         body:JSON.stringify({servidor,pessoa,canal,corpo})});
       return r.json();
     };
-    const invoke=async(_cmd,{base64})=>{
+    const invoke=async(cmd,opcoes)=>{
+      if(cmd==='ler_imagem_mod'){
+        const r=await fetch('/ler-volume',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({servidor,pessoa,canal:opcoes.channel,corpo:JSON.parse(opcoes.payload)})});
+        const resposta=await r.json(); if(!r.ok)throw new Error(resposta.error); return resposta;
+      }
+      const {base64}=opcoes;
       const conteudo=base64.startsWith('data:')?base64.slice(base64.indexOf(',')+1):base64;
       const bytes=atob(conteudo).length;
       if(bytes>10*1024*1024)throw new Error('arquivo-grande-demais');
@@ -387,6 +399,14 @@ async function atender(m){
       desenharRoster();
       responder(m.n,true,{valor:recusados});return;
     }
+    if(m.tipo==='enviar-imagem'){
+      const bytes=escolhidos[m.arquivo-1];
+      if(!bytes)throw new Error('arquivo-nao-esta-de-pe');
+      escolhidos[m.arquivo-1]=null;
+      const r=await fetch('/volume?servidor='+servidor+'&pessoa='+pessoa+'&token='+encodeURIComponent(m.token),{method:'POST',body:bytes});
+      if(!r.ok)throw new Error((await r.json()).error);
+      responder(m.n,true,{valor:null});return;
+    }
     if(m.tipo==='pedaco'){
       const bytes=escolhidos[m.arquivo-1];
       if(!bytes)throw new Error('arquivo-nao-esta-de-pe');
@@ -394,7 +414,7 @@ async function atender(m){
       let bruto='';for(const b of fatia)bruto+=String.fromCharCode(b);
       responder(m.n,true,{valor:btoa(bruto)});return;
     }
-    if(m.tipo==='soltar-arquivo'){responder(m.n,true,{valor:null});return;}
+    if(m.tipo==='soltar-arquivo'){escolhidos[m.arquivo-1]=null;responder(m.n,true,{valor:null});return;}
     if(m.tipo==='superficie-criar'){responder(m.n,true,{valor:superficies.criar(m.descricao)});return;}
     if(m.tipo==='superficie-montar'){
       const recusados=superficies.de(m.superficie).montar(m.arvore);
@@ -461,7 +481,8 @@ fonte=new EventSource('/do-mod?servidor='+servidor+'&pessoa='+pessoa);
 fonte.onmessage=e=>{void atender(JSON.parse(e.data));};
 `;
 
-const css = `body{margin:0;padding:24px;background:var(--seele-negro-absoluto);color:var(--seele-osso);
+const css = `*, *::before, *::after{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--seele-negro-absoluto);color:var(--seele-osso);
 font:13px/1.6 var(--seele-mono,monospace)}
 a{color:var(--seele-laranja-nerv)} header{margin-bottom:24px}
 #tela-sessao{display:flex;flex-direction:column;gap:16px;border:1px solid var(--seele-linha);padding:16px;min-height:60vh}
@@ -518,6 +539,32 @@ const servidorHttp = http.createServer(async (req, res) => {
       const q = await corpo();
       sessoes.delete(`${q.servidor}:${q.pessoa}`);
       res.end('{}');
+      return;
+    }
+
+    if (url.pathname === '/volume' && req.method === 'POST') {
+      const mundo = mundoDe(url.searchParams.get('servidor'));
+      const token = url.searchParams.get('token');
+      const espera = mundo.esperas.get(token);
+      if (!espera || espera.pessoa !== url.searchParams.get('pessoa')) throw new Error('sem-espera');
+      mundo.esperas.delete(token);
+      const blocos = []; let tamanho = 0;
+      for await (const bloco of req) {
+        tamanho += bloco.length;
+        if (tamanho > 10 * 1024 * 1024) throw new Error('imagem-grande-demais');
+        blocos.push(bloco);
+      }
+      mundo.volumes.set(espera.nome, Buffer.concat(blocos));
+      res.end('{}'); return;
+    }
+    if (url.pathname === '/ler-volume' && req.method === 'POST') {
+      const q = await corpo();
+      const resposta = JSON.parse(aoPedir(q.servidor, { person: q.pessoa, channel: q.canal, write: true }, q.corpo));
+      if (!resposta.ok || !resposta.volume) throw new Error('leitura-recusada');
+      const bytes = mundoDe(q.servidor).volumes.get(resposta.volume);
+      if (!bytes) throw new Error('imagem-indisponivel');
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ uri: 'data:image/png;base64,' + bytes.toString('base64'), papel: 'imagem', bytes: bytes.length }));
       return;
     }
 

@@ -47,3 +47,16 @@ O destino precisa ser novo. O pacote contém somente `mod.json`, `cliente/main.j
 Antes da distribuição, valide instalação, hash, aceite, consulta, saída, reconexão e preservação de dados no SEELE nativo. Publicar uma nova versão requer avaliação do novo commit, atualização do catálogo e assinatura pelo indexador; mudar o código local não atualiza instalações existentes.
 
 Referência: [migração API 2 → 3](https://github.com/DATA-AND-DEV/SEELE/blob/fbcb09786c29219a18e20289381aa7d0e0ae13ac/docs/migracao-de-mods-api-2-para-3.md).
+
+
+### Imagens e cartão compacto (3.2.0)
+
+Este pacote exige a API 5 do SEELE, tanto no cliente quanto no servidor. A API
+anterior continua aceita pelo aplicativo, mas não dispõe do transporte binário.
+Publique o aplicativo e atualize quem hospeda antes de disponibilizar este pacote.
+
+Foto e banner aceitam até 10 MiB. O MOD autoriza o envio, o aplicativo transmite
+os bytes diretamente e só então o MOD publica a referência nova. A imagem anterior
+permanece até a conclusão; arquivos existentes no formato de fragmentos continuam
+legíveis. A lista de pessoas usa banner ao fundo, retrato quadrado e nome em uma
+linha. O perfil completo continua acessível pelo clique.

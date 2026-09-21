@@ -141,145 +141,30 @@ const inicialDe = (perfil, id) =>
 /** De onde o produto busca os bytes de uma imagem deste perfil. */
 const imagemDoServidor = (id, slot) => ({
   canal: ultimo.canal,
-  pedido: { op: 'asset', person: String(id), slot, path: ultimo.perfis[String(id)]?.[slot] ?? null },
+  pedido: { op: 'asset', person: String(id), slot, path: ultimo.perfis[String(id)]?.[slot] ?? null, ...(ultimo.perfis[String(id)]?.[slot]?.startsWith('volume:') ? { transporte: 'volume' } : {}) },
   campo: 'image',
 });
 
 // ------------------------------------------------ a apresentação da pessoa
 
-/**
- * O cartão de uma pessoa, na lista do produto.
- *
- * # O que ele é agora, e por que isso responde U27
- *
- * Antes: uma linha de texto **abaixo** do apelido do servidor, com o nome
- * exibido, o pronome e o status, cada um num parágrafo. A cor guardada não
- * aparecia; o efeito guardado não aparecia; a faixa não existia.
- *
- * Agora: uma composição — faixa ao fundo, retrato sobreposto, nome, pronome e
- * status em hierarquia, com a cor escolhida na borda e o efeito animando. É a
- * apresentação que a versão `ce976fd` tinha, declarada em vez de escrita no
- * DOM do produto.
- *
- * # O que ele continua não sendo
- *
- * Ele não recebe foco, não tem botão dentro e não alcança nó nenhum. O clique
- * — que U27 também pediu — é montado pelo **produto**, em volta desta
- * declaração, ligado ao ID real: ver `acaoPrincipal` no registro abaixo.
- */
+/** Linha da lista: faixa ao fundo, retrato quadrado e nome; o clique abre o perfil. */
 function cartaoDaPessoa(id) {
   const perfil = ultimo.perfis[id] ?? {};
+  const nome = String(perfil.displayName ?? '').trim() || apelidoDe(id);
   const acento = acentoDe(perfil);
-  const exibido = String(perfil.displayName ?? '').trim();
-  const apelido = apelidoDe(id);
-  const pronome = String(perfil.pronouns ?? '').trim();
-  const status = String(perfil.status ?? '').trim();
-  const bio = String(perfil.bio ?? '').trim();
-  const animacao = ANIMACAO_DO_EFEITO[perfil.effect] ?? 'nenhuma';
-
-  const dentro = [];
-
-  // **A faixa existe sempre.**
-  //
-  // Ela era desenhada só quando havia imagem enviada, e sem ela o cartão era
-  // uma linha: retrato pequeno, nome, pastilha. A versão de `ce976fd` tinha
-  // faixa sempre — `linear-gradient(120deg, accent, #172c48)` quando não havia
-  // imagem —, e é ela que dá ao cartão a forma de cartão: um bloco de cor, o
-  // retrato subindo sobre ele, o nome embaixo.
-  //
-  // Aqui o gradiente é declarado por paradas, que é o que a API aceita: o
-  // valor é montado pelo produto de partes que ele conferiu, e não por um
-  // texto de `linear-gradient` que este MOD escreveria.
-  dentro.push(caixa(
-    perfil.banner
-      ? [midia('faixa', { doServidor: imagemDoServidor(id, 'banner'), descricao: 'faixa de ' + apelido })]
-      : [],
-    {
-      altura: 44,
-      recortar: 'cortar',
-      largura: 'total',
-      ...(perfil.banner ? {} : {
-        gradiente: {
-          angulo: 120,
-          paradas: [{ cor: acento, em: 0 }, { cor: '#101014', em: 100 }],
-        },
-      }),
-      ...(animacao !== 'nenhuma' ? { animacao: { nome: animacao, duracao: 6000 } } : {}),
-    },
-  ));
-
-  const identidade = [
-    retrato('retrato', {
-      inicial: inicialDe(perfil, id),
-      formato: 'quadrado',
-      descricao: exibido ? 'retrato de ' + exibido : 'retrato de ' + apelido,
-      ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
-      // A cor escolhida entra na borda do retrato: é a peça de identidade mais
-      // estável do cartão, e a que aparece mesmo sem imagem nenhuma.
-      // O retrato sobe sobre a faixa, com uma borda da cor do fundo do
-      // cartão em volta — é o recorte que separa os dois e o que a versão de
-      // `ce976fd` fazia com `border:5px solid #171d2c`.
-      estilo: {
-        largura: 52,
-        altura: 52,
-        posicao: 'relativa',
-        // O retrato precisa se destacar: fundo mais claro que o cartão e um
-        // anel da cor escolhida. Com o fundo igual ao do cartão ele só
-        // aparecia onde cruzava a faixa, e lia como um recorte, não como um
-        // retrato.
-        fundo: '#161310',
-        borda: { largura: 2, cor: acento },
-        ...(animacao !== 'nenhuma' ? { animacao: { nome: animacao, duracao: 2600 } } : {}),
-      },
-    }),
-    pilha([
-      // O nome exibido quando há; senão o apelido. Nunca os dois: repeti-los
-      // seria a linha dizendo duas vezes a mesma coisa.
-      caixa([exibido || apelido], { cor: acento, peso: 'forte', corpo: 15, linhasMaximas: 2 }),
-      ...(pronome || status ? [caixa([
-        ...(pronome ? [distintivo([pronome], {
-          borda: { largura: 1, cor: '#3a322a' },
-          corpo: 10,
-          opacidade: 0.9,
-        })] : []),
-        ...(status ? [caixa([status], {
-          cor: '#c9c1ae',
-          corpo: 12, linhasMaximas: 2, largura: 'total',
-        })] : []),
-      ], { direcao: 'linha', intervalo: 6, quebra: 'sim' })] : []),
-    ], { intervalo: 6, crescer: 1, base: 0 }),
-  ];
-
-  // Identidade em fluxo: nomes longos não sobem sobre a faixa nem deixam
-  // uma lacuna vazia no lugar de uma transformação visual.
-  dentro.push(caixa(identidade, {
-    direcao: 'linha', alinhar: 'inicio', intervalo: 12,
-    preenchimento: 12, largura: 'total', margem: 0,
-  }));
-
-  // Resumo com reticências; a biografia inteira continua no perfil aberto.
-  if (bio) dentro.push(caixa([caixa([bio], {
-    corpo: 12, cor: '#c9c1ae', entrelinha: 1.45, linhasMaximas: 2,
-  })], { preenchimento: 10, margem: 0 }));
-  dentro.push(caixa(['Ver perfil completo'], {
-    corpo: 11, cor: '#b6aa97', preenchimento: 10, margem: 0,
-  }));
-
-  // Quem não escreveu nada não ganha cartão: uma moldura vazia ao lado de um
-  // nome é o produto anunciando uma ausência que ninguém pediu para anunciar.
-  const escreveu = exibido || pronome || status || perfil.avatar || perfil.banner;
-  if (!escreveu) return null;
-
-  return [caixa(dentro, {
-    largura: 'total',
-    fundo: '#0a0806',
-    borda: { largura: 1, cor: '#3a322a' },
-    recortar: 'cortar',
-    // O espaço de baixo é do conteúdo; o de cima é da faixa, que encosta na
-    // borda. Sem `preenchimento` assimétrico a faixa ficaria emoldurada, e ela
-    // é o fundo do cartão.
-    margem: 0,
-  })];
+  if (!perfil.displayName && !perfil.pronouns && !perfil.status && !perfil.avatar && !perfil.banner) return null;
+  return [{
+    forma: 'caixa', chave: 'pessoa-compacta',
+    ...(perfil.banner ? { fundoDeMidia: { doServidor: imagemDoServidor(id, 'banner') } } : {}),
+    estilo: { largura: 'total', altura: 44, preenchimento: 6, direcao: 'linha', alinhar: 'centro', intervalo: 10,
+      fundo: '#0a0806', borda: { largura: 1, cor: '#3a322a' }, recortar: 'cortar', margem: 0 },
+    dentro: [
+      retrato('foto', { inicial: inicialDe(perfil, id), formato: 'quadrado', descricao: 'Retrato de ' + nome,
+        ...(perfil.avatar ? { doServidor: imagemDoServidor(id, 'avatar') } : {}),
+        estilo: { largura: 30, altura: 30, encolher: 0, borda: { largura: 1, cor: acento } } }),
+      caixa([nome], { corpo: 14, peso: 'forte', cor: '#eae3cf', linhasMaximas: 1, crescer: 1, larguraMinima: 0 }),
+    ],
+  }];
 }
 
 /** Os cartões de todo mundo, por `id`, para `SeeleUI.cartoes`. */
@@ -702,6 +587,17 @@ const repintarTelas = agruparAtualizacoes(async () => {
  */
 async function enviarImagem(canal, slot, escolhido) {
   if (escolhido.papel !== 'imagem') throw new Error('Escolha uma imagem.');
+  if (typeof SeeleUI.enviar === 'function') {
+    try {
+      const inicio = await request(canal, { op: 'upload-start', slot, transporte: 'volume', bytes: escolhido.bytes });
+      await SeeleUI.enviar(escolhido.id, inicio.token);
+      await request(canal, { op: 'upload-finish', token: inicio.token });
+      return;
+    } finally {
+      try { await SeeleUI.soltar(escolhido.id); }
+      catch (erro) { console.error('PERFIS: falha ao soltar arquivo: ' + (erro.message || erro)); }
+    }
+  }
   const prefixo = 'data:' + escolhido.tipo + ';base64,';
   // O tamanho anunciado é o da cadeia inteira, prefixo incluído: é o que o
   // servidor compara ao somar os fragmentos.

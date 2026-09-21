@@ -113,7 +113,7 @@ test('Distribuição: manifestos e JavaScript válidos, pacote independente',()=
   for(const mod of ['perfis']){
     const dir=path.join(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'mod.json')));
     // A API que este pacote declara e o produto executa — ver `APIS_ACEITAS`.
-    assert.ok([3,4].includes(manifest.api),'API declarada: '+manifest.api);assert.equal(manifest.id,'seele/'+mod);
+    assert.ok([3,4,5].includes(manifest.api),'API declarada: '+manifest.api);assert.equal(manifest.id,'seele/'+mod);
     for(const reach of manifest.reach)assert.ok(Buffer.byteLength(reach,'utf8')<=32,'Cada alcance deve caber no limite do protocolo.');
     new vm.Script(fs.readFileSync(path.join(dir,manifest.client),'utf8'));
     new vm.Script(fs.readFileSync(path.join(dir,manifest.server),'utf8'));

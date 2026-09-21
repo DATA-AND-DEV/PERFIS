@@ -173,8 +173,14 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
         await editor.getByRole('button', { name: new RegExp('^' + rotulo + '( |$)') }).click();
         await (await escolha).setFiles({ name: slot + '.png', mimeType: 'image/png', buffer: bytes });
         const esperado = 'data:image/png;base64,' + bytes.toString('base64');
-        await aba.waitForFunction(({ esperado }) => [...document.querySelectorAll('.dialogo-de-mod img')]
-          .some(img => img.src === esperado && img.complete && img.naturalWidth === 64), { esperado });
+        if (slot === 'banner') {
+          await aba.waitForFunction(esperado => [...document.querySelectorAll('.dialogo-de-mod [data-chave-do-mod="pessoa-compacta"]')]
+            .some(no => no.style.backgroundImage.includes(esperado)), esperado);
+          assert.equal(await aba.evaluate(async uri => { const i = new Image(); i.src = uri; await i.decode(); return i.naturalWidth; }, esperado), 64);
+        } else {
+          await aba.waitForFunction(esperado => [...document.querySelectorAll('.dialogo-de-mod img')]
+            .some(img => img.src === esperado && img.complete && img.naturalWidth === 64), esperado);
+        }
         assert.equal(await editor.getByLabel('SOBRE MIM', { exact: true }).inputValue(), 'Rascunho com foto nova');
         if (slot === 'avatar') ultimaFoto = esperado;
       }
@@ -186,6 +192,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'mod.json')));
       await editor.locator('.dialogo-de-mod-corpo').evaluate(no => { no.scrollTop = 0; });
       await aba.screenshot({ path: process.env.PERFIS_SCREENSHOT || path.join(temp, 'perfis-imagens.png') });
       await editor.locator('.superficie-de-mod-sair').click();
+      const compacto = aba.locator('#lista-roster [data-chave-do-mod="pessoa-compacta"]').first();
+      assert.equal(await compacto.evaluate(no => no.getBoundingClientRect().height), 44);
+      assert.ok((await compacto.evaluate(no => no.style.backgroundImage)).includes('data:image/png;'));
+      assert.equal(await compacto.locator('img').count(), 1);
+      await compacto.screenshot({ path: '/tmp/perfis-cartao-compacto.png' });
       console.log('PERFIS: foto, faixa e substituição decodificadas no renderer; rascunho preservado.');
     }
 
