@@ -85,6 +85,7 @@ let ultimo = null;
  */
 const rascunhos = new Map();
 let aviso = '';
+let enviandoImagem = false;
 /** Se `DESCARTAR` foi apertado e ainda espera a confirmação. */
 let perguntandoDescarte = false;
 /** De quem é a ficha aberta no diálogo de detalhes. */
@@ -571,6 +572,7 @@ function oEditor() {
     cor('accent', 'COR', acento),
     escolha('effect', 'EFEITO', perfil.effect ?? 'none', EFEITOS),
     arquivo('avatar', 'RETRATO', {
+      desligado: enviandoImagem,
       // **Para quê, de que tipo, até quanto.** O produto usa a finalidade
       // como título do diálogo do sistema, o tipo como filtro de extensões e
       // o teto para recusar antes de ler. A auditoria de 20/09/2026 abriu
@@ -581,6 +583,7 @@ function oEditor() {
       limiteDeBytes: TETO_DO_RETRATO,
     }),
     arquivo('banner', 'FAIXA', {
+      desligado: enviandoImagem,
       finalidade: 'Escolha a faixa que aparece atrás do seu retrato',
       tipos: ['imagem'],
       limiteDeBytes: TETO_DA_FAIXA,
@@ -698,7 +701,7 @@ async function enviarImagem(canal, slot, escolhido) {
   // O tamanho anunciado é o da cadeia inteira, prefixo incluído: é o que o
   // servidor compara ao somar os fragmentos.
   const total = prefixo.length + Math.ceil(escolhido.bytes / 3) * 4;
-  const inicio = await request(canal, { op: 'upload-start', slot, length: total });
+  let inicio;
 
   let sobra = prefixo;
   let lidos = 0;
@@ -708,6 +711,7 @@ async function enviarImagem(canal, slot, escolhido) {
   // 20/09/2026 apontou no MESA, e que vale igual aqui: um envio que falha no
   // meio deixava os bytes presos no produto até a saída da sessão.
   try {
+  inicio = await request(canal, { op: 'upload-start', slot, length: total });
   for (;;) {
     if (sobra.length < FRAGMENTO && lidos < escolhido.bytes) {
       const pedaco = await SeeleUI.pedaco(escolhido.id, lidos);
@@ -940,10 +944,11 @@ iniciar(
         repintar(aRegiao());
         return repintarTelas();
       }
-      if (canal === null) return null;
+      if (canal === null || enviandoImagem) return SeeleUI.soltar(evento.arquivo.id);
+      enviandoImagem = true;
       aviso = 'enviando…';
       repintar(aRegiao());
-      return enviarImagem(canal, evento.chave, evento.arquivo).then(
+      return repintarTelas().then(() => enviarImagem(canal, evento.chave, evento.arquivo)).then(
         async () => {
           const visto = await request(canal, { op: 'view', people: [String(ultimo.me)] });
           Object.assign(ultimo.perfis, visto.profiles);
@@ -957,7 +962,7 @@ iniciar(
           repintar(aRegiao());
           await repintarTelas();
         },
-      );
+      ).finally(async () => { enviandoImagem = false; await repintarTelas(); });
     }
 
     if (evento.nome === 'campo' || evento.nome === 'escolha' || evento.nome === 'cor') {
