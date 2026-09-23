@@ -60,3 +60,11 @@ os bytes diretamente e só então o MOD publica a referência nova. A imagem ant
 permanece até a conclusão; arquivos existentes no formato de fragmentos continuam
 legíveis. A lista de pessoas usa banner ao fundo, retrato quadrado e nome em uma
 linha. O perfil completo continua acessível pelo clique.
+
+### Avatar nas outras superfícies do servidor (3.3.0)
+
+O PERFIS também publica `pessoa.avatar`: a foto escolhida aparece na chamada,
+nas mensagens e na barra inferior do operador. Trocar ou remover a foto atualiza
+esses locais; desativar o MOD devolve a imagem nativa. Isso exige o SEELE com
+suporte a esse ponto de contribuição. Em aplicativos anteriores, os cartões
+continuam funcionando, mas os demais avatares permanecem nativos.

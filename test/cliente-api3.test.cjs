@@ -57,12 +57,13 @@ function client(w, options = {}) {
   const regions = [], themes = [], requests = [], timers = [], errors = [], cartoes = [], pedidosDeCartao = [];
   // As superfícies de pé, por `id`, e os avisos que passaram pela fila.
   const superficies = new Map(), avisos = [], contribuicoes = [];
+  let serieDeContribuicoes = 0;
   // Os arquivos que uma pessoa «escolheu», por número — o que o produto
   // guardaria. O MOD nunca os vê inteiros: ele pede pedaços.
   const escolhidos = new Map(), soltos = [];
   const snapshot = { me: 2, open_channel: 1, channels: [{ id: 1 }], presentes: [{ id: 1, nickname: 'Alex' }, { id: 2, nickname: 'Lia' }] };
   const sandbox = vm.createContext({
-    console: { error: e => errors.push(e) },
+    console: { error: e => errors.push(e), warn: e => errors.push(e) },
     setTimeout: (fn, ms) => { if (ms === 150) { void Promise.resolve().then(fn); } else timers.push(fn); },
     SeeleMods: {
       snapshot: async () => structuredClone(snapshot),
@@ -166,6 +167,7 @@ function client(w, options = {}) {
           const PONTOS = {
             'pessoa.identidade': ['substituir', 'decorar'],
             'pessoa.cartao': ['substituir', 'adicionar'],
+            'pessoa.avatar': ['substituir'],
             'pessoa.detalhes': ['adicionar'],
             'pessoa.acoes': ['adicionar'],
             'canal.item': ['decorar', 'adicionar'],
@@ -188,7 +190,7 @@ function client(w, options = {}) {
           if (contribuicoes.length >= 128) {
             throw new Error('um MOD mantém até 128 contribuições de pé');
           }
-          const handle = 'c' + (contribuicoes.length + 1);
+          const handle = 'c' + (++serieDeContribuicoes);
           contribuicoes.push({ handle, ...structuredClone(pedido) });
           return { handle };
         },
@@ -1396,6 +1398,38 @@ if (manifest.id === 'seele/perfis') {
     // Nenhuma forma da API carrega endereço, e é isso que impede a janela de
     // quem conversa de buscar bytes na rede de um estranho.
     assert.doesNotMatch(arvore, /https?:/);
+  });
+
+  test('PERFIS: avatar de servidor é publicado, reutilizado, substituído e revogado', async () => {
+    const w = world();
+    const enviar = () => {
+      const png = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+      const inicio = w.call({ op: 'upload-start', slot: 'avatar', length: png.length }, '2');
+      const fim = w.call({ op: 'upload-part', slot: 'avatar', token: inicio.token, index: 0, part: png }, '2');
+      assert.equal(fim.ok, true, fim.error);
+      return w.call({ op: 'view', people: ['2'] }, '2').profiles['2'].avatar;
+    };
+    const primeira = enviar();
+    const c = client(w); await settle();
+    const avatares = () => c.contribuicoes.filter(c => c.ponto === 'pessoa.avatar');
+    assert.equal(avatares().length, 1);
+    assert.equal(avatares()[0].alvo, '2');
+    assert.equal(avatares()[0].conteudo.doServidor.pedido.path, primeira);
+    const handle = avatares()[0].handle;
+    c.tick(); await settle();
+    assert.equal(avatares()[0].handle, handle, 'consulta sem mudança recriou a contribuição');
+    const segunda = enviar();
+    c.tick(); await settle();
+    assert.equal(avatares().length, 1);
+    assert.equal(avatares()[0].conteudo.doServidor.pedido.path, segunda);
+    c.fire({ nome: 'botao', chave: 'tirar-avatar' }); await assentar(20);
+    assert.equal(avatares().length, 0, 'remover a foto deixou o avatar nas outras superfícies');
+    enviar(); c.tick(); await settle();
+    assert.equal(avatares().length, 1);
+    c.snapshot.open_channel = null;
+    c.snapshot.channels = [];
+    c.tick(); await settle();
+    assert.equal(avatares().length, 0, 'sair manteve o avatar da sessão anterior');
   });
 
   test('PERFIS: a pessoa escolhe uma imagem e ela chega inteira ao servidor', async () => {

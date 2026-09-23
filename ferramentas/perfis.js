@@ -29,7 +29,7 @@ const {
   caixa, pilha, grade, separador, espaco,
   formulario, acoes, textoLongo, cor, retrato, distintivo, arquivo, midia,
   request, iniciar, temSuperficies, temContribuicoes,
-  pagina, dialogo, contribuir, entrada, avisar, agruparAtualizacoes,
+  pagina, dialogo, contribuir, revogar, entrada, avisar, agruparAtualizacoes,
 } = interfaceMod('seele/perfis', 'PERFIS');
 
 /**
@@ -94,6 +94,7 @@ let aberto = null;
 const telas = { diretorio: null, detalhes: null, editor: null };
 /** O handle da substituição de cartão, para revogá-la ao sair. */
 let cartaoRegistrado = null;
+const avataresRegistrados = new Map();
 
 const meuPerfil = () => ultimo?.perfis?.[String(ultimo.me)] ?? {};
 
@@ -757,8 +758,37 @@ async function tirarImagem(canal, slot) {
   await publicarCartoes();
 }
 
+/** Consulta e edição compartilham a fila para não duplicar handles em voo. */
+const publicarAvatares = agruparAtualizacoes(async () => {
+  if (!temContribuicoes) return;
+  const desejados = new Map();
+  for (const id of ultimo?.ids ?? []) {
+    if (!ultimo.perfis[id]?.avatar) continue;
+    const doServidor = imagemDoServidor(id, 'avatar');
+    desejados.set(String(id), { doServidor, assinatura: JSON.stringify(doServidor) });
+  }
+  for (const [id, anterior] of avataresRegistrados) {
+    if (desejados.get(id)?.assinatura === anterior.assinatura) continue;
+    await revogar(anterior.handle);
+    avataresRegistrados.delete(id);
+  }
+  for (const [id, atual] of desejados) {
+    if (avataresRegistrados.has(id)) continue;
+    const { handle } = await contribuir({
+      ponto: 'pessoa.avatar', modo: 'substituir', alvo: id, prioridade: 10,
+      conteudo: { doServidor: atual.doServidor },
+    });
+    avataresRegistrados.set(id, { handle, assinatura: atual.assinatura });
+  }
+});
+
 /** Entrega os cartões ao produto. A recusa não derruba o painel. */
 async function publicarCartoes() {
+  try {
+    await publicarAvatares();
+  } catch (erro) {
+    console.warn('PERFIS: os avatares foram recusados: ' + (erro.message || erro));
+  }
   try {
     await SeeleUI.cartoes(cartoesDaLista());
   } catch (erro) {
@@ -796,6 +826,8 @@ iniciar(
   },
   async () => {
     ultimo = null;
+    try { await publicarAvatares(); } catch { /* a sessão pode já ter saído */ }
+    avataresRegistrados.clear();
     aberto = null;
     cartaoRegistrado = null;
     telas.diretorio = null;
