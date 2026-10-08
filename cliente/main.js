@@ -80,6 +80,18 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   const arquivo = (chave, dentro, extra) => ({ forma: 'arquivo', chave, dentro: String(dentro), ...extra });
   const midia = (chave, extra) => ({ forma: 'midia', chave, ...extra });
 
+  /**
+   * Escreve no registro de quem hospeda, **quando há registro**.
+   *
+   * O `console` do executor nativo só existe a partir da v0.15.1, e a API 5
+   * desde a v0.14.2. Nos apps do meio, um `console.warn` num caminho
+   * de erro virava `ReferenceError` e derrubava justamente o que ele só queria
+   * contar.
+   */
+  const anotar = (nivel, mensagem) => {
+    try { globalThis.console?.[nivel]?.(mensagem); } catch { /* sem registro, não há a quem dizer */ }
+  };
+
   const canalDe = snapshot => {
     const id = snapshot.open_channel ?? snapshot.channels?.[0]?.id;
     return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -296,7 +308,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
         }
       } catch (erro) {
         try { await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro'); }
-        catch (falha) { console.error(titulo + ': ' + (falha.message || String(falha))); }
+        catch (falha) { anotar('error', titulo + ': ' + (falha.message || String(falha))); }
       } finally {
         // Agenda depois de concluir: nunca sobrepõe consultas nem repete
         // escritas. O SEELE encerra o executor e seus temporizadores ao sair.
@@ -309,7 +321,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar, dizer, agruparAtualizacoes,
+    request, iniciar, desenhar, dizer, agruparAtualizacoes, anotar,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle
@@ -355,7 +367,7 @@ const {
   caixa, pilha, grade, separador, espaco,
   formulario, acoes, textoLongo, cor, retrato, distintivo, arquivo, midia,
   request, iniciar, temSuperficies, temContribuicoes,
-  pagina, dialogo, contribuir, revogar, entrada, avisar, agruparAtualizacoes,
+  pagina, dialogo, contribuir, revogar, entrada, avisar, agruparAtualizacoes, anotar,
 } = interfaceMod('seele/perfis', 'PERFIS');
 
 /**
@@ -420,19 +432,23 @@ let aberto = null;
 const telas = { diretorio: null, detalhes: null, editor: null };
 /** O handle da substituição de cartão, para revogá-la ao sair. */
 let cartaoRegistrado = null;
+/** O handle da entrada «Perfis» na navegação, pela mesma razão. */
+let entradaRegistrada = null;
 const avataresRegistrados = new Map();
 
 const meuPerfil = () => ultimo?.perfis?.[String(ultimo.me)] ?? {};
 
 /**
- * A chave do rascunho: servidor e pessoa.
+ * A chave do rascunho: a pessoa, **neste servidor**.
  *
- * O canal entra porque o servidor deste MOD guarda perfil por servidor, e o
- * MOD atravessa troca de canal sem recarregar. Um rascunho de perfil não deve
+ * O servidor deste MOD guarda perfil por servidor, e um rascunho não deve
  * viajar de um destino para outro — foi um dos riscos que a auditoria mandou
- * reproduzir, e amarrá-lo aqui é o que o fecha.
+ * reproduzir. Quem fecha isso é o produto: a instância do MOD vive dentro de
+ * uma sessão, e sair do servidor encerra todas. O canal ficava fora disso e
+ * dentro da chave: uma troca de canal no mesmo servidor, com o editor aberto,
+ * remontava o editor com outra chave e o texto sumia da tela.
  */
-const chaveDoRascunho = () => String(ultimo?.canal ?? '-') + ':' + String(ultimo?.me ?? '-');
+const chaveDoRascunho = () => String(ultimo?.me ?? '-');
 
 /** O rascunho desta entidade, ou nada quando ninguém editou. */
 const meuRascunho = () => rascunhos.get(chaveDoRascunho()) ?? null;
@@ -494,15 +510,61 @@ function cartaoDaPessoa(id) {
   }];
 }
 
-/** Os cartões de todo mundo, por `id`, para `SeeleUI.cartoes`. */
+/**
+ * O teto por mensagem da ponte, em bytes UTF-8: o padrão de `tetoDaMensagem`
+ * no prelúdio do executor. A folga cobre o envelope `{ tipo, n }` que o
+ * prelúdio acrescenta, com um `n` de muitos dígitos numa sessão longa.
+ */
+const TETO_DA_PONTE = 12288;
+const FOLGA_DO_ENVELOPE = 64;
+/** Pessoas com cartão por MOD: `LIMITES_DO_CARTAO.cartoes` no produto. */
+const CARTOES_POR_MOD = 64;
+
+/** Bytes UTF-8 de um texto, contados como o prelúdio conta. */
+function bytesUtf8(texto) {
+  let bytes = 0;
+  for (let i = 0; i < texto.length; i += 1) {
+    const c = texto.charCodeAt(i);
+    if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
+    else if (c >= 0xD800 && c <= 0xDBFF && i + 1 < texto.length
+      && texto.charCodeAt(i + 1) >= 0xDC00 && texto.charCodeAt(i + 1) <= 0xDFFF) { bytes += 4; i += 1; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+/**
+ * Os cartões para `SeeleUI.cartoes`, **só os que cabem numa mensagem**.
+ *
+ * O conjunto vai inteiro numa mensagem só — o produto troca a lista toda a
+ * cada chamada —, e a mensagem tem teto. Mandar todo mundo fazia o prelúdio
+ * recusar a partir de 14 pessoas com foto e faixa, e a lista congelava no
+ * último conjunto aceito. Aqui o conjunto para antes do teto: o próprio
+ * cartão primeiro, depois a ordem da lista. Quem não coube fica com a
+ * apresentação do SEELE, e `fora` diz quantos foram.
+ */
 function cartoesDaLista() {
   const cartoes = {};
-  for (const id of ultimo.ids) {
+  const meu = String(ultimo.me);
+  const ordem = ultimo.ids.includes(meu) ? [meu, ...ultimo.ids.filter(id => id !== meu)] : ultimo.ids;
+  let bytes = bytesUtf8(JSON.stringify({ tipo: 'cartoes', n: 0, cartoes: {} })) + FOLGA_DO_ENVELOPE;
+  let quantos = 0, fora = 0;
+  for (const id of ordem) {
     const partes = cartaoDaPessoa(id);
-    if (partes) cartoes[id] = partes;
+    if (!partes) continue;
+    // `"id":[…],` — a vírgula conta a mais no primeiro, e sobrar é o lado certo.
+    const custo = bytesUtf8(JSON.stringify(id)) + bytesUtf8(JSON.stringify(partes)) + 2;
+    if (quantos >= CARTOES_POR_MOD || bytes + custo > TETO_DA_PONTE) { fora += 1; continue; }
+    cartoes[id] = partes;
+    bytes += custo;
+    quantos += 1;
   }
-  return cartoes;
+  return { cartoes, fora };
 }
+
+/** Quantos ficaram de fora da última vez, para dizer só quando muda. */
+let cartoesDeFora = 0;
 
 /**
  * Registra a substituição da apresentação, uma vez por sessão.
@@ -922,7 +984,7 @@ async function enviarImagem(canal, slot, escolhido) {
       return;
     } finally {
       try { await SeeleUI.soltar(escolhido.id); }
-      catch (erro) { console.error('PERFIS: falha ao soltar arquivo: ' + (erro.message || erro)); }
+      catch (erro) { anotar('error', 'PERFIS: falha ao soltar arquivo: ' + (erro.message || erro)); }
     }
   }
   const prefixo = 'data:' + escolhido.tipo + ';base64,';
@@ -972,7 +1034,7 @@ async function enviarImagem(canal, slot, escolhido) {
       await SeeleUI.soltar(escolhido.id);
     } catch (erro) {
       // Uma falha ao devolver não pode substituir a falha que a trouxe.
-      console.error('PERFIS: o arquivo não foi devolvido: ' + (erro.message || erro));
+      anotar('error', 'PERFIS: o arquivo não foi devolvido: ' + (erro.message || erro));
     }
   }
 }
@@ -1113,12 +1175,21 @@ async function publicarCartoes() {
   try {
     await publicarAvatares();
   } catch (erro) {
-    console.warn('PERFIS: os avatares foram recusados: ' + (erro.message || erro));
+    anotar('warn', 'PERFIS: os avatares foram recusados: ' + (erro.message || erro));
   }
   try {
-    await SeeleUI.cartoes(cartoesDaLista());
+    const { cartoes, fora } = cartoesDaLista();
+    if (fora !== cartoesDeFora) {
+      cartoesDeFora = fora;
+      if (fora) {
+        anotar('warn', 'PERFIS: ' + fora + ' pessoa(s) ficaram com a apresentação do SEELE na lista: '
+          + 'os cartões de todos não cabem numa mensagem da ponte (' + TETO_DA_PONTE + ' bytes, '
+          + CARTOES_POR_MOD + ' pessoas).');
+      }
+    }
+    await SeeleUI.cartoes(cartoes);
   } catch (erro) {
-    console.warn('PERFIS: a lista recusou os cartões: ' + (erro.message || erro));
+    anotar('warn', 'PERFIS: a lista recusou os cartões: ' + (erro.message || erro));
   }
 }
 
@@ -1139,12 +1210,12 @@ iniciar(
     await publicarCartoes();
     // A entrada e a substituição, uma vez por sessão. Registrá-las a cada
     // consulta seria uma entrada nova a cada quatro segundos.
-    if (temContribuicoes && !cartaoRegistrado) {
+    if (temContribuicoes && (!entradaRegistrada || !cartaoRegistrado)) {
       try {
-        await entrada('Perfis', 'abrir-diretorio');
+        if (!entradaRegistrada) entradaRegistrada = (await entrada('Perfis', 'abrir-diretorio')).handle;
         await registrarApresentacao();
       } catch (erro) {
-        console.warn('PERFIS: a integração foi recusada: ' + (erro.message || erro));
+        anotar('warn', 'PERFIS: a integração foi recusada: ' + (erro.message || erro));
       }
     }
     await repintarTelas();
@@ -1155,6 +1226,15 @@ iniciar(
     try { await publicarAvatares(); } catch { /* a sessão pode já ter saído */ }
     avataresRegistrados.clear();
     aberto = null;
+    // **Revogadas, e não esquecidas.** Sem canal não há perfil de ninguém para
+    // abrir; esquecer os handles sem revogá-los fazia a volta ao canal
+    // registrar outra entrada «Perfis» e outra substituição do cartão.
+    for (const handle of [entradaRegistrada, cartaoRegistrado]) {
+      if (handle) {
+        try { await revogar(handle); } catch { /* a sessão pode já ter saído */ }
+      }
+    }
+    entradaRegistrada = null;
     cartaoRegistrado = null;
     telas.diretorio = null;
     telas.detalhes = null;
@@ -1189,6 +1269,16 @@ iniciar(
     // `pedirFechamento` no produto.
     if (evento.nome === 'fechar' || evento.nome === 'fechar-pedido') {
       if (evento.superficie === 'perfis-detalhes') aberto = null;
+      // **Quando o produto diz que descartou, descartou.** Com o editor sujo,
+      // fechar passa pela confirmação dele — «o que você escreveu e não gravou
+      // será perdido» —, e `descartou` é a resposta. Guardar o rascunho aqui
+      // tornaria falsa a frase que a pessoa acabou de aceitar.
+      if (evento.nome === 'fechar' && evento.superficie === 'perfis-editor' && evento.descartou) {
+        rascunhos.delete(chaveDoRascunho());
+        perguntandoDescarte = false;
+        aviso = '';
+        return repintarTelas();
+      }
       return null;
     }
 

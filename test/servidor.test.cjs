@@ -119,4 +119,14 @@ test('Distribuição: manifestos e JavaScript válidos, pacote independente',()=
     new vm.Script(fs.readFileSync(path.join(dir,manifest.server),'utf8'));
   }
 });
+// O README é o que quem instala lê antes do código. Na 3.3.0 ele ainda abria
+// com «2.0.0» e «Requer API de MOD 3» e dizia que a API não permitia avatar
+// nem banner, com o manifesto na 3.3.0 e na API 5.
+test('Distribuição: o README abre com a versão e a API do manifesto',()=>{
+  const dir=path.join(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'mod.json')));
+  const readme=fs.readFileSync(path.join(dir,'README.md'),'utf8');
+  const [titulo,...resto]=readme.split('\n');
+  assert.ok(titulo.endsWith('— '+manifest.version),'o título do README não diz a versão do manifesto: '+titulo);
+  assert.ok(resto.slice(0,4).join('\n').includes('API de MOD '+manifest.api),'o README não abre com a API do manifesto');
+});
 module.exports={server};

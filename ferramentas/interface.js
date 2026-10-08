@@ -77,6 +77,18 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   const arquivo = (chave, dentro, extra) => ({ forma: 'arquivo', chave, dentro: String(dentro), ...extra });
   const midia = (chave, extra) => ({ forma: 'midia', chave, ...extra });
 
+  /**
+   * Escreve no registro de quem hospeda, **quando há registro**.
+   *
+   * O `console` do executor nativo só existe a partir da v0.15.1, e a API 5
+   * desde a v0.14.2. Nos apps do meio, um `console.warn` num caminho
+   * de erro virava `ReferenceError` e derrubava justamente o que ele só queria
+   * contar.
+   */
+  const anotar = (nivel, mensagem) => {
+    try { globalThis.console?.[nivel]?.(mensagem); } catch { /* sem registro, não há a quem dizer */ }
+  };
+
   const canalDe = snapshot => {
     const id = snapshot.open_channel ?? snapshot.channels?.[0]?.id;
     return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -293,7 +305,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
         }
       } catch (erro) {
         try { await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro'); }
-        catch (falha) { console.error(titulo + ': ' + (falha.message || String(falha))); }
+        catch (falha) { anotar('error', titulo + ': ' + (falha.message || String(falha))); }
       } finally {
         // Agenda depois de concluir: nunca sobrepõe consultas nem repete
         // escritas. O SEELE encerra o executor e seus temporizadores ao sair.
@@ -306,7 +318,7 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   return {
     // API 3
     texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar, dizer, agruparAtualizacoes,
+    request, iniciar, desenhar, dizer, agruparAtualizacoes, anotar,
     // API 4 — composição
     caixa, pilha, grade, rolagem, separador, espaco,
     // API 4 — controle

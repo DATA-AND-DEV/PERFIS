@@ -63,7 +63,10 @@ function client(w, options = {}) {
   const escolhidos = new Map(), soltos = [];
   const snapshot = { me: 2, open_channel: 1, channels: [{ id: 1 }], presentes: [{ id: 1, nickname: 'Alex' }, { id: 2, nickname: 'Lia' }] };
   const sandbox = vm.createContext({
-    console: { error: e => errors.push(e), warn: e => errors.push(e) },
+    // **O executor nativo só ganhou `console` na v0.15.1.** A API 5 existe
+    // desde a v0.14.2, então um pacote de API 5 roda também onde
+    // `console` não existe — e `semConsole` é esse executor.
+    ...(options.semConsole ? {} : { console: { error: e => errors.push(e), warn: e => errors.push(e) } }),
     setTimeout: (fn, ms) => { if (ms === 150) { void Promise.resolve().then(fn); } else timers.push(fn); },
     SeeleMods: {
       snapshot: async () => structuredClone(snapshot),
@@ -203,6 +206,18 @@ function client(w, options = {}) {
       },
 
       cartoes: async pedidos => {
+        if (options.recusarCartoes) throw new Error('a lista recusou neste teste');
+        // **O teto da ponte vale para os cartões também.** `SeeleUI.cartoes`
+        // é um `pedir('cartoes', …)` como qualquer outro, e o prelúdio recusa
+        // acima de 12.288 bytes **antes de mandar**: a lista fica com o último
+        // conjunto aceito, e o MOD só recebe a promessa recusada. Medido no
+        // prelúdio real em 08/10/2026: 14 pessoas com foto e faixa deram
+        // 13.148 bytes. Sem esta conta, o laboratório aceitava o que a janela
+        // recusa.
+        const fio = Buffer.byteLength(JSON.stringify({ tipo: 'cartoes', n: 999999, cartoes: pedidos }), 'utf8');
+        if (fio > TETO_DA_MENSAGEM) {
+          throw new Error('mensagem-grande: cartoes tem ' + fio + ' bytes e o teto por mensagem é ' + TETO_DA_MENSAGEM);
+        }
         const entradas = Object.entries(pedidos ?? {});
         if (entradas.length > 64) throw new Error('um MOD dá cartão a até 64 pessoas, e vieram ' + entradas.length);
         // **A gramática do cartão, e o que continua de fora dela.**
@@ -260,6 +275,10 @@ function client(w, options = {}) {
     delete sandbox.SeeleUI.superficies;
     delete sandbox.SeeleUI.contribuicoes;
   }
+  // O V8 põe um `console` próprio em todo contexto do `vm`; o QuickJS do
+  // executor antes da v0.15.1 não tinha nenhum. Apagá-lo é o que faz
+  // `console.warn` virar o `ReferenceError` que lá ele vira.
+  if (options.semConsole) vm.runInContext('delete globalThis.console', sandbox);
   vm.runInContext(source, sandbox, { timeout: 1000 });
   return {
     regions, themes, requests, timers, errors, snapshot, avisos, contribuicoes,
@@ -1335,6 +1354,22 @@ if (manifest.id === 'seele/perfis') {
     assert.deepEqual(c.cartoes(), {}, 'o cartão sobreviveu à saída do canal: ' + JSON.stringify(c.cartoes()));
   });
 
+  // A 3.3.0 esquecia os handles ao perder o canal sem revogá-los: na volta,
+  // registrava outra entrada «Perfis» e outra substituição do cartão. Cada
+  // ida e volta somava duas contribuições ao teto de 128 do produto.
+  test('PERFIS: perder o canal e voltar não duplica a entrada nem o cartão', async () => {
+    const w = world();
+    const c = client(w); await assentar();
+    assert.equal(c.entradas().length, 1);
+    c.snapshot.open_channel = null; c.snapshot.channels = [];
+    c.tick(); await assentar();
+    c.snapshot.open_channel = 1; c.snapshot.channels = [{ id: 1 }];
+    c.tick(); await assentar();
+    assert.equal(c.entradas().length, 1, 'a volta ao canal registrou outra entrada «Perfis»');
+    assert.equal(c.contribuicoes.filter(x => x.ponto === 'pessoa.cartao').length, 1,
+      'a volta ao canal registrou outra substituição do cartão');
+  });
+
   test('PERFIS: editar e gravar muda o perfil, e a recusa do servidor é dita', async () => {
     const w = world();
     const c = client(w); await settle();
@@ -1541,6 +1576,50 @@ if (manifest.id === 'seele/perfis') {
       'confirmar o descarte não apagou');
   });
 
+  // ---- o rascunho é da pessoa neste servidor, e não do canal ----
+  //
+  // A instância do MOD vive dentro de um servidor: sair da sessão encerra
+  // todas (`base.js`, laço sobre `modsCarregados`). A chave do rascunho
+  // levava o canal, e a consulta seguinte a uma troca de canal — por
+  // moderação, por um canal apagado, por um canal novo que fica em primeiro —
+  // remontava o editor aberto com outra chave: o texto sumia da tela.
+  test('PERFIS: o canal mudar com o editor aberto não apaga o que está escrito', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.agir('abrir-editor'); await assentar();
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Escrevendo enquanto o canal muda.' });
+    await assentar();
+    c.snapshot.channels = [{ id: 1 }, { id: 2 }];
+    c.snapshot.open_channel = 2;
+    c.tick(); await assentar(20);
+    assert.equal(c.controlesDe('perfis-editor').get('bio').valor, 'Escrevendo enquanto o canal muda.',
+      'trocar de canal no mesmo servidor apagou o rascunho da tela');
+    assert.equal(c.superficies.get('perfis-editor').suja, true, 'o editor deixou de estar sujo');
+  });
+
+  // ---- quando o produto diz que descartou, o rascunho sai ----
+  //
+  // Com o editor sujo, fechar passa pela confirmação **do produto** — «FECHAR
+  // SEM GRAVAR? O que você escreveu … será perdido» — e só fecha com
+  // «DESCARTAR E FECHAR», que chega como `fechar` com `descartou: true` (ver
+  // `confirmarDescarte` em `mods-superficies.js`). A 3.3.0 ignorava o campo e
+  // guardava o rascunho: a pessoa reabria e encontrava o que tinha aceitado
+  // perder, e a frase do produto ficava falsa.
+  test('PERFIS: descartar na confirmação do produto apaga o rascunho', async () => {
+    const w = world();
+    const c = client(w); await settle();
+    c.agir('abrir-editor'); await assentar();
+    c.fire({ nome: 'campo', chave: 'bio', valor: 'Escrito e descartado.' });
+    await assentar();
+    c.fire({ nome: 'fechar-pedido', superficie: 'perfis-editor', porque: 'saida-do-produto', temAlteracoes: true });
+    c.fire({ nome: 'fechar', superficie: 'perfis-editor', porque: 'saida-do-produto', descartou: true });
+    await assentar();
+    c.agir('abrir-editor'); await assentar();
+    assert.equal(c.controlesDe('perfis-editor').get('bio').valor, '',
+      'o produto disse que descartou, e o rascunho continuou lá');
+    assert.equal(c.superficies.get('perfis-editor').suja, false, 'o editor reabriu sujo');
+  });
+
   // ---- o arquivo volta mesmo quando o envio falha ----
   //
   // Um dos riscos que a auditoria de 20/09/2026 mandou reproduzir: «MESA chama
@@ -1644,6 +1723,77 @@ if (manifest.id === 'seele/perfis') {
     await assentar();
     const diretorio = JSON.stringify(c.superficie('perfis-diretorio') ?? null);
     assert.match(diretorio, /70 pessoa\(s\)/, 'avisos=' + JSON.stringify(c.avisos) + ' erros=' + JSON.stringify(c.errors));
+  });
+
+  // ---- a lista cheia não pode apagar todos os cartões ----
+  //
+  // `SeeleUI.cartoes` troca o conjunto inteiro numa mensagem só, e a mensagem
+  // tem teto. Na 3.3.0, a partir de 14 pessoas com foto e faixa (21 sem
+  // imagem), a mensagem passava do teto, o prelúdio a recusava, e a lista
+  // ficava congelada no último conjunto aceito — ou vazia, numa sessão que já
+  // começasse cheia. O único sinal era um `console.warn`.
+  const servidorCheio = (w, quantos, comImagens) => {
+    const store = {};
+    for (let id = 1; id <= quantos; id += 1) {
+      store[String(id)] = {
+        revision: 1, displayName: 'Nome exibido ' + id, pronouns: '', bio: '', status: '',
+        accent: '#a78bfa', effect: 'none',
+        avatar: comImagens ? 'volume:images/' + id + '-1759900000-abcdefghijkl' : null,
+        banner: comImagens ? 'volume:images/' + id + '-1759900001-abcdefghijkl' : null,
+      };
+    }
+    w.data.profiles = JSON.stringify(store);
+    return Array.from({ length: quantos }, (_, i) => ({ id: i + 1, nickname: 'Pessoa ' + (i + 1) }));
+  };
+
+  test('PERFIS: com mais gente do que cabe na ponte, a lista recebe os cartões que cabem', async () => {
+    const w = world();
+    const presentes = servidorCheio(w, 20, true);
+    const c = client(w); await assentar();
+    c.snapshot.presentes = presentes;
+    c.tick(); await assentar(20);
+    const cartoes = c.cartoes();
+    // **Alguém que só existe na lista cheia.** Os cartões da primeira volta
+    // (duas pessoas) ficariam na lista se a mensagem nova fosse recusada — e
+    // era exatamente isso que acontecia: o conjunto congelava no último aceito.
+    assert.ok(cartoes['3'],
+      'a lista continuou com o conjunto anterior: ' + JSON.stringify(Object.keys(cartoes)) + ' · ' + JSON.stringify(c.errors));
+    // **O próprio cartão vem primeiro.** É o que a pessoa procura para saber
+    // se o MOD está funcionando, e é o que ela edita.
+    assert.ok(cartoes['2'], 'o cartão de quem usa ficou de fora');
+    // E quem ficou de fora é dito, com a razão, a quem lê o registro.
+    const fora = 20 - Object.keys(cartoes).length;
+    assert.ok(fora > 0, 'o caso precisa de gente que não cabe');
+    assert.ok(c.errors.some(e => String(e).includes(fora + ' pessoa(s)')),
+      'quem ficou com a apresentação do SEELE não foi dito: ' + JSON.stringify(c.errors));
+  });
+
+  test('PERFIS: mais de 64 perfis não derrubam a lista', async () => {
+    const w = world();
+    const presentes = servidorCheio(w, 70, false);
+    const c = client(w); await assentar();
+    c.snapshot.presentes = presentes;
+    c.tick(); await assentar(30);
+    const quantos = Object.keys(c.cartoes()).length;
+    assert.ok(c.cartoes()['3'] && quantos <= 64,
+      'cartões entregues: ' + JSON.stringify(Object.keys(c.cartoes())) + ' · ' + JSON.stringify(c.errors));
+  });
+
+  // ---- um executor sem `console` ----
+  //
+  // Nos apps 0.14.2 e 0.15.0 (API 5, sem `console` no executor), o
+  // `console.warn` do caminho de erro virava `ReferenceError`: a recusa dos
+  // cartões derrubava a consulta inteira antes de registrar a entrada de
+  // navegação, e a pessoa via «console is not defined» no lugar do PERFIS.
+  test('PERFIS: sem console no executor, uma recusa não derruba o MOD', async () => {
+    const w = world();
+    assert.equal(w.escritaDireta({ op: 'save', revision: 0, profile: { displayName: 'Lia', pronouns: '', bio: '', status: '', accent: '#a78bfa', effect: 'none' } }, '2').ok, true);
+    const c = client(w, { semConsole: true, recusarCartoes: true });
+    await assentar();
+    assert.equal(c.entradas().length, 1,
+      'a entrada de navegação não foi registrada: ' + JSON.stringify(c.avisos));
+    assert.ok(!JSON.stringify(c.avisos).includes('console'),
+      'o MOD disse um erro do próprio registro: ' + JSON.stringify(c.avisos));
   });
 
   // ---- a degradação é explícita, e ela é testada ----
