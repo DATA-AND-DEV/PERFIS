@@ -1,16 +1,38 @@
-/* SEELE Perfis 1.2.2 — identidade e permissão vêm exclusivamente do contexto. */
+/* SEELE MOD PERFIS, linha 4 (API 6) — identidade e permissão vêm exclusivamente do contexto. */
 (() => {
   'use strict';
   const LIMITS={avatar:10*1024*1024,banner:10*1024*1024}, CHUNK=6000, ASSET_PART=65536, MAX_PROFILES=128;
-  const encodedLimit=slot=>4*Math.ceil(LIMITS[slot]/3)+32;
   const effects=['none','aurora','sparkle','pulse'];
   function fail(message) { throw new Error(message); }
-  function text(value,max) { if (typeof value!=='string' || value.length>max) fail('Texto maior que o permitido.'); return value.trim(); }
+  // Characters, as the product counts them (`tamanhoMaximo`, in code points):
+  // counting UTF-16 units refused an emoji name the editor counter allowed.
+  const length=value=>[...value].length;
+  function text(value,max) { if (typeof value!=='string' || length(value)>max) fail('Texto maior que o permitido.'); return value.trim(); }
   function person(value) { if (typeof value!=='string' || !/^[1-9][0-9]{0,19}$/.test(value)) fail('Pessoa inválida.'); return value; }
   function blank() { return {revision:0,displayName:'',pronouns:'',bio:'',status:'',accent:'#f2521f',effect:'none',avatar:null,banner:null}; }
+  // A refusal about editor fields names them: `erros` maps the control key to a
+  // short reason, the form shared by the official MODs, and goes straight to the
+  // API 6 `formulario.erros`. `error` stays the phrase the 3.x client shows.
+  // C0 and C1 controls, and the direction controls (U+202A–U+202E,
+  // U+2066–U+2069) and marks (LRM, RLM, ALM): in a name they draw a text that
+  // reads as another one. The bio keeps the line break.
+  const CONTROLS=/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+  const CONTROLS_IN_BIO=/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
   function validate(raw,old) {
     if (!raw || typeof raw!=='object') fail('Perfil inválido.');
-    if (!/^#[0-9a-f]{6}$/i.test(raw.accent || '') || !effects.includes(raw.effect)) fail('Efeito ou cor inválidos.');
+    const erros={};let message=null;
+    if (!/^#[0-9a-f]{6}$/i.test(raw.accent || '')) erros.accent='uma cor #rrggbb';
+    if (!effects.includes(raw.effect)) erros.effect='um dos efeitos da lista';
+    if (erros.accent || erros.effect) message='Efeito ou cor inválidos.';
+    for (const [field,max] of [['displayName',40],['pronouns',30],['bio',280],['status',60]]) {
+      const value=raw[field];
+      if (typeof value!=='string') erros[field]='um texto';
+      else if (length(value)>max) erros[field]='até '+max+' caracteres';
+      else if ((field==='bio'?CONTROLS_IN_BIO:CONTROLS).test(value)) { erros[field]='sem caracteres de controle'; if (!message) message='O texto tem um caractere de controle.'; continue; }
+      else continue;
+      if (!message) message='Texto maior que o permitido.';
+    }
+    if (message) { const e=new Error(message); e.erros=erros; throw e; }
     return {...old,revision:old.revision+1,displayName:text(raw.displayName,40),pronouns:text(raw.pronouns,30),bio:text(raw.bio,280),status:text(raw.status,60),accent:raw.accent.toLowerCase(),effect:raw.effect};
   }
   // Leitura de imagens legadas em fragmentos; novos envios usam volume binário.
@@ -42,7 +64,13 @@
           if(!budget){pending.push(item);continue;}
           if(item.path.startsWith('volume:')) {
             const nome=item.path.slice(7);
-            if(volume.tamanho(nome)!==null&&!volume.apagar(nome))pending.push(item);
+            // An empty path may still receive the bytes of a retired upload:
+            // the wait lasts 600 s. It stays in the list until a little after
+            // that, instead of leaving an orphan file in the volume.
+            if(volume.tamanho(nome)===null){
+              if(item.ate===undefined)item.ate=mundo.agora()+900;
+              if(mundo.agora()<item.ate)pending.push(item);
+            } else if(!volume.apagar(nome))pending.push(item);
             budget--; continue;
           }
           const raw=arquivos.ler(item.path);if(raw===null)continue;
@@ -55,6 +83,19 @@
         if(pending.length)dados.garbage=JSON.stringify(pending);else delete dados.garbage;
       }
       const retire=asset=>{if(asset)dados.garbage=JSON.stringify([...(dados.garbage?JSON.parse(dados.garbage):[]),asset]);};
+      // The windows of this MOD learn that a profile changed, instead of asking
+      // every 4 s (API 6). No channel: the profile belongs to the whole
+      // server. The runtime only sends it after the data is stored.
+      //
+      // **The series.** Above four per second, Server 1.0 keeps only the newest
+      // notice of each channel. Every announced change raises `serie`, and the
+      // view tells the current one: a window that sees a jump knows it missed
+      // a change, and reads everyone again.
+      const serie=Number(dados.serie)||0;
+      const announce=profile=>{
+        dados.serie=String(serie+1);
+        if(typeof mundo.avisar==='function')mundo.avisar({carga:{pessoa:me,revisao:profile.revision,serie:serie+1}});
+      };
       const own=store[me] || blank();
       if (r.op==='view') {
         const ids=Array.isArray(r.people) ? r.people : [me];
@@ -62,7 +103,7 @@
         const profiles={};
         for (const id of ids) { person(id); if (store[id]) profiles[id]=store[id]; }
         profiles[me]=own;
-        return JSON.stringify({ok:true,me,profiles});
+        return JSON.stringify({ok:true,me,profiles,serie});
       }
       if (r.op==='asset') {
         const id=person(r.person),slot=r.slot;
@@ -101,61 +142,23 @@
         if (bytes!==up.bytes) fail('Imagem incompleta. Escolha novamente.');
         const previous=own[up.slot];
         store[me]={...own,[up.slot]:up.path,revision:own.revision+1};
-        dados.profiles=JSON.stringify(store); delete dados['upload-'+me]; retire(previous);
+        dados.profiles=JSON.stringify(store); delete dados['upload-'+me]; retire(previous); announce(store[me]);
         return JSON.stringify({ok:true,finished:true,profile:store[me]});
       }
+      // The upload goes through the volume (ADR 0048) and only through it: the
+      // legacy fragment upload is gone. Legacy fragment images stay readable.
+      if (r.op==='upload-part' || (r.op==='upload-start' && r.transporte!=='volume')) fail('Atualize o PERFIS: o envio é pelo volume.');
       if (r.op==='upload-start') {
         if (!['avatar','banner'].includes(r.slot)) fail('Imagem inválida.');
-        if (r.transporte==='volume') {
-          if(typeof volume==='undefined' || typeof volume.tamanho!=='function') fail('Atualize o SEELE de quem hospeda para enviar imagens por fluxo.');
-          if(!Number.isInteger(r.bytes)||r.bytes<1||r.bytes>LIMITS[r.slot]) fail('Use uma imagem de até 10 MiB.');
-          const token=String(mundo.agora())+'-'+Math.random().toString(36).slice(2,14);
-          const path='images/'+me+'-'+token;
-          if(!volume.esperar(token,path,['png','jpeg','webp','gif'],600)) fail('Não foi possível iniciar o envio.');
-          const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
-          dados['upload-'+me]=JSON.stringify({transport:'volume',token,path:'volume:'+path,slot:r.slot,bytes:r.bytes});
-          if(old)retire(old.path);
-          return JSON.stringify({ok:true,token});
-        }
-        if (!Number.isInteger(r.length) || r.length<1 || r.length>encodedLimit(r.slot)) fail('Use uma imagem de até 10 MiB.');
-        const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
+        if(typeof volume==='undefined' || typeof volume.tamanho!=='function') fail('Atualize o SEELE de quem hospeda para enviar imagens por fluxo.');
+        if(!Number.isInteger(r.bytes)||r.bytes<1||r.bytes>LIMITS[r.slot]) fail('Use uma imagem de até 10 MiB.');
         const token=String(mundo.agora())+'-'+Math.random().toString(36).slice(2,14);
-        const upload={token,path:'uploads/'+me+'-'+token+'.parts',slot:r.slot,total:r.length,length:0,next:0,started:mundo.agora()};
-        dados['upload-'+me]=JSON.stringify(upload);
-        if (old) retire(old.path);
+        const path='images/'+me+'-'+token;
+        if(!volume.esperar(token,path,['png','jpeg','webp','gif'],600)) fail('Não foi possível iniciar o envio.');
+        const old=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
+        dados['upload-'+me]=JSON.stringify({transport:'volume',token,path:'volume:'+path,slot:r.slot,bytes:r.bytes});
+        if(old)retire(old.path);
         return JSON.stringify({ok:true,token});
-      }
-      if (r.op==='upload-part') {
-        const up=dados['upload-'+me] ? JSON.parse(dados['upload-'+me]) : null;
-        if (!up || up.token!==r.token || up.next!==r.index || mundo.agora()-up.started>600) fail('Upload expirado ou fora de ordem. Escolha a imagem novamente.');
-        if (typeof r.part!=='string' || !r.part.length || r.part.length>CHUNK || up.length+r.part.length>up.total) fail('Fragmento inválido.');
-        const finished=up.length+r.part.length===up.total;
-        if(!finished&&r.part.length!==CHUNK)fail('Fragmento incompleto.');
-        let payload=r.part;
-        if(up.next===0){
-          const header=/^data:image\/(png|jpeg|webp|gif);base64,/.exec(payload);
-          const starts={png:'iVBORw0KGgo',jpeg:'/9j/',gif:'R0lGOD',webp:'UklGR'};
-          if(!header||!payload.slice(header[0].length).startsWith(starts[header[1]]))fail('Use PNG, JPEG, WebP ou GIF válido.');
-          up.header=header[0].length;payload=payload.slice(up.header);
-        }
-        if(!(finished?/^[A-Za-z0-9+/]*={0,2}$/:/^[A-Za-z0-9+/]+$/).test(payload))fail('Imagem inválida.');
-        if (finished) {
-          const length=up.total-up.header;
-          if(length%4!==0)fail('Imagem inválida.');
-          const bytes=length/4*3-(payload.endsWith('==')?2:payload.endsWith('=')?1:0);
-          if(bytes>LIMITS[up.slot])fail('Imagem maior que o limite deste campo.');
-        }
-        const partPath=up.path+'.'+up.next;
-        if (!arquivos.escrever(partPath,r.part)) fail('Falha ao gravar a imagem.');
-        up.length+=r.part.length;up.next++;up.started=mundo.agora();
-        if(!arquivos.escrever(up.path,JSON.stringify({format:1,parts:up.next,length:up.length}))){arquivos.apagar(partPath);fail('Falha ao gravar o índice da imagem.');}
-        if (finished) {
-          const previous=own[up.slot];
-          store[me]={...own,[up.slot]:up.path,revision:own.revision+1};
-          dados.profiles=JSON.stringify(store); delete dados['upload-'+me];
-          retire(previous);
-        } else dados['upload-'+me]=JSON.stringify(up);
-        return JSON.stringify({ok:true,finished,revision:store[me]?.revision || 0});
       }
       if (r.revision!==own.revision) fail('Seu perfil mudou em outra janela. Recarregue antes de salvar.');
       if (r.op==='save') store[me]=validate(r.profile,own);
@@ -167,8 +170,8 @@
         store[me]={...blank(),revision:own.revision+1};
         for (const slot of ['avatar','banner']) retire(own[slot]);
       } else fail('Operação desconhecida.');
-      dados.profiles=JSON.stringify(store);
+      dados.profiles=JSON.stringify(store); announce(store[me]);
       return JSON.stringify({ok:true,me,profile:store[me]});
-    } catch(e) { return JSON.stringify({ok:false,error:e.message}); }
+    } catch(e) { return JSON.stringify({ok:false,error:e.message,...(e.erros?{erros:e.erros}:{})}); }
   };
 })();

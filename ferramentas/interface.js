@@ -2,52 +2,33 @@
 //
 // A casca dos MODs oficiais: o que os três fazem igual, num lugar só.
 //
-// # O que mudou com a API 4
+// # A API 6
 //
-// A casca da API 3 sabia desenhar **uma região** — a faixa de 240 px que a
-// auditoria de 20/09/2026 chamou de «o mesmo formulário estreito para
-// atividades diferentes». Ela sabia receber evento, redesenhar na hora e
-// guardar rascunho, e isso continua valendo.
+// O MOD declara, e o produto monta. A casca sabe:
 //
-// O que ela não sabia era **abrir**. Não havia gesto para começar uma
-// atividade: os três MODs desenhavam ao conectar porque a região era o único
-// lugar onde eles podiam existir.
-//
-// Agora ela sabe mais três coisas:
-//
+// - **ler o retrato.** `SeeleUI.retrato()` é a lista branca do que o MOD pode
+//   saber da sessão: quem é ele, quem está no servidor, os canais e onde a
+//   casca está. O `snapshot` inteiro da API 5 não existe mais;
 // - **registrar uma entrada.** `entrada()` põe um nome na navegação do
 //   servidor; ele não ocupa altura nenhuma até alguém apertá-lo;
-// - **abrir uma superfície.** `pagina()`, `painel()` e `dialogo()` devolvem
-//   punhos com `montar`, `fechar` e estado de alteração;
+// - **abrir uma superfície.** `pagina()`, `dialogo()` e `folha()` devolvem
+//   punhos com `montar`, `atualizar`, `formulario.erros` e `fechar`;
 // - **apresentar dentro do SEELE.** `contribuir()` registra um ponto
-//   semântico — o cartão de uma pessoa, por exemplo — e devolve o handle que
-//   o revoga.
+//   semântico — o cartão de uma pessoa, por exemplo — e devolve o handle;
+//   `atualizar()` troca o conteúdo dele sem revogar, e `revogar()` o tira.
 //
-// # A degradação é explícita
-//
-// `SeeleUI.superficies` **não existe** quando o pacote declara `api: 3`. Não é
-// um método que falha: é um método ausente, e o `TypeError` acontece na linha
-// que o chama. `temSuperficies` é como um MOD pergunta antes, quando quer
-// degradar em vez de falhar.
+// A região de 240 px e os cartões em lote da API 3 saíram: a 6 não os tem, e
+// eles faltam do `SeeleUI` como qualquer coisa que a API não tem.
 function interfaceMod(id, titulo, intervalo = 4000) {
   const api = globalThis.SeeleMods, ui = globalThis.SeeleUI;
-  if (!api || !ui) throw new Error('Este MOD exige a API 3 do SEELE.');
+  if (!api || !ui) throw new Error('Este MOD exige a API 6 do SEELE.');
 
-  // ---- as formas da API 3 ----
+  // ---- as formas ----
   const texto = dentro => ({ forma: 'texto', dentro: String(dentro ?? '') });
-  const cabecalho = dentro => ({ forma: 'titulo', dentro: String(dentro ?? '') });
-  const lista = itens => ({ forma: 'lista', dentro: itens.map(dentro => ({ forma: 'item', dentro: String(dentro) })) });
   const campo = (chave, rotulo, valor, extra) => ({ forma: 'campo', chave, rotulo, valor: String(valor ?? ''), ...extra });
-  const escolha = (chave, rotulo, valor, opcoes) => ({ forma: 'escolha', chave, rotulo, valor: String(valor ?? ''), opcoes });
+  const escolha = (chave, rotulo, valor, opcoes, extra) => ({ forma: 'escolha', chave, rotulo, valor: String(valor ?? ''), opcoes, ...extra });
   const botao = (chave, dentro, desligado = false, extra) => ({ forma: 'botao', chave, dentro: String(dentro), desligado, ...extra });
-  const linha = (dentro, estilo) => ({ forma: 'linha', dentro, ...(estilo ? { estilo } : {}) });
 
-  // ---- as formas de composição da API 4 ----
-  //
-  // Elas existem para o MOD montar **os componentes dele**. Um perfil com
-  // faixa, retrato sobreposto e nome não é um formulário mais largo; é uma
-  // caixa dentro de outra, com posição, recorte e camada.
-  //
   // **`estilo` e `extra` são argumentos separados, e isso não é arrumação.**
   // `classe`, `chave` e `nomeAcessivel` são do **nó**; `fundo` e `intervalo`
   // são do estilo dele. Misturá-los num objeto só faria `classe: 'editor'`
@@ -60,20 +41,11 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   const separador = (estilo, extra) => ({ forma: 'separador', ...(estilo ? { estilo } : {}), ...extra });
   const espaco = (estilo, extra) => ({ forma: 'espaco', ...(estilo ? { estilo } : {}), ...extra });
 
-  // ---- os controles da API 4 ----
   const formulario = (chave, dentro, extra) => ({ forma: 'formulario', chave, dentro, ...extra });
   const acoes = (dentro, fixas = false) => ({ forma: 'acoes', dentro, ...(fixas ? { fixas: true } : {}) });
-  const abas = (chave, valor, dentro) => ({ forma: 'abas', chave, valor, dentro });
-  const aba = (chave, rotulo, dentro) => ({ forma: 'aba', chave, rotulo, dentro });
   const textoLongo = (chave, rotulo, valor, extra) => ({ forma: 'textoLongo', chave, rotulo, valor: String(valor ?? ''), ...extra });
-  const numero = (chave, rotulo, valor, extra) => ({ forma: 'numero', chave, rotulo, valor, ...extra });
-  const deslizante = (chave, rotulo, valor, extra) => ({ forma: 'deslizante', chave, rotulo, valor, ...extra });
-  const marca = (chave, rotulo, valor) => ({ forma: 'marca', chave, rotulo, valor: valor === true });
-  const interruptor = (chave, rotulo, valor) => ({ forma: 'interruptor', chave, rotulo, valor: valor === true });
-  const cor = (chave, rotulo, valor) => ({ forma: 'cor', chave, rotulo, valor: String(valor ?? '#000000') });
+  const cor = (chave, rotulo, valor, extra) => ({ forma: 'cor', chave, rotulo, valor: String(valor ?? '#000000'), ...extra });
   const retrato = (chave, extra) => ({ forma: 'retrato', chave, ...extra });
-  const distintivo = (dentro, estilo) => ({ forma: 'distintivo', dentro, ...(estilo ? { estilo } : {}) });
-  const link = (chave, dentro, endereco) => ({ forma: 'link', chave, dentro: String(dentro), endereco });
   const arquivo = (chave, dentro, extra) => ({ forma: 'arquivo', chave, dentro: String(dentro), ...extra });
   const midia = (chave, extra) => ({ forma: 'midia', chave, ...extra });
 
@@ -89,52 +61,25 @@ function interfaceMod(id, titulo, intervalo = 4000) {
     try { globalThis.console?.[nivel]?.(mensagem); } catch { /* sem registro, não há a quem dizer */ }
   };
 
-  const canalDe = snapshot => {
-    const id = snapshot.open_channel ?? snapshot.channels?.[0]?.id;
-    return Number.isSafeInteger(id) && id > 0 ? id : null;
-  };
-
-  async function request(canal, valor) {
-    const resposta = await api.request(id, canal, valor);
-    if (!resposta?.ok) throw new Error(resposta?.error || 'O servidor recusou a consulta.');
-    return resposta;
-  }
-
-  // O último canal visto, para um evento saber a quem falar sem perguntar de
-  // novo: `snapshot` é uma ida à ponte, e um arraste não pode pagar uma por
-  // quadro.
-  let canalAtual = null;
-  let pintando = false;
-  let pendente = null;
+  /** O retrato da sessão: a lista branca do que o MOD pode saber dela. */
+  const lerRetrato = () => ui.retrato();
 
   /**
-   * Uma pintura de cada vez, e **nenhuma perdida**.
+   * Um pedido à metade de servidor deste MOD.
    *
-   * Dois `regiao` em voo chegariam fora de ordem, e o desenho de trás apagaria
-   * o da frente — por isso a segunda espera. Mas a primeira versão **descartava**
-   * a segunda, e dois eventos seguidos (escolher a densidade e a fonte, no mesmo
-   * quadro) perdiam o desenho do segundo: a tela ficava mostrando a escolha
-   * anterior, e só o relógio a corrigia, quatro segundos depois.
-   *
-   * Guardar a última e pintá-la ao fim da que está em voo é o que resolve. É a
-   * mesma forma do aviso que chega durante uma colheita: o que não cabe agora
-   * não se joga fora, fica marcado.
+   * A recusa vira um `Error` com a frase de `error`. Quando ela é de campos, os
+   * `erros` dela (a `chave` do controle e o motivo, a forma combinada entre os
+   * MODs oficiais) vão presos no erro, para o formulário pô-los nos campos.
    */
-  const desenhar = async partes => {
-    if (pintando) { pendente = partes; return; }
-    pintando = true;
-    try {
-      let atual = partes;
-      for (;;) {
-        pendente = null;
-        await ui.regiao([cabecalho(titulo), ...atual]);
-        if (!pendente) return;
-        atual = pendente;
-      }
-    } finally {
-      pintando = false;
+  async function request(canal, valor) {
+    const resposta = await api.request(id, canal, valor);
+    if (!resposta?.ok) {
+      const falha = new Error(resposta?.error || 'O servidor recusou a consulta.');
+      if (resposta?.erros && typeof resposta.erros === 'object') falha.erros = resposta.erros;
+      throw falha;
     }
-  };
+    return resposta;
+  }
 
   /** Uma atualização em voo e apenas o estado mais recente aguardando. */
   function agruparAtualizacoes(atualizar) {
@@ -157,57 +102,23 @@ function interfaceMod(id, titulo, intervalo = 4000) {
 
   // ---- as superfícies ----
   //
-  // **Ausente, e não recusado.** Quando o pacote declara `api: 3`, o prelúdio
-  // monta um `SeeleUI` em que `superficies` simplesmente não está. Um MOD que
-  // queira degradar pergunta por `temSuperficies` antes; um que não pergunte
-  // recebe um `TypeError` na linha que chamou, com pilha, em vez de uma
-  // promessa que rejeita com um código.
-  const temSuperficies = Boolean(ui.superficies);
-  const temContribuicoes = Boolean(ui.contribuicoes);
-
-  /**
-   * Abre (ou reabre) uma superfície e devolve o punho dela.
-   *
-   * Reabrir **não recria**: chamar com o mesmo `id` mostra a que já existe, e
-   * o que estava escrito nos campos dela continua lá. É a diferença entre
-   * «mostre aquela» e «comece de novo», e um MOD que quisesse a segunda
-   * `descarta` a primeira.
-   */
-  async function superficie(descricao) {
-    if (!temSuperficies) throw new Error('Este SEELE não oferece superfícies de MOD.');
-    return ui.superficies.criar(descricao);
-  }
-
-  const pagina = (chaveDaTela, titulo, extra) =>
-    superficie({ id: chaveDaTela, tipo: 'pagina', titulo, ...extra });
-  const painel = (chaveDaTela, titulo, extra) =>
-    superficie({ id: chaveDaTela, tipo: 'painel', titulo, ...extra });
-  const dialogo = (chaveDaTela, titulo, extra) =>
-    superficie({ id: chaveDaTela, tipo: 'dialogo', modal: true, titulo, ...extra });
+  // Reabrir **não recria**: chamar com o mesmo `id` mostra a que já existe, e o
+  // que estava escrito nos campos dela continua lá.
+  const superficie = descricao => ui.superficies.criar(descricao);
+  const pagina = (chaveDaTela, titulo, extra) => superficie({ id: chaveDaTela, tipo: 'pagina', titulo, ...extra });
+  const dialogo = (chaveDaTela, titulo, extra) => superficie({ id: chaveDaTela, tipo: 'dialogo', modal: true, titulo, ...extra });
+  const folha = (chaveDaTela, titulo, extra) => superficie({ id: chaveDaTela, tipo: 'folha', titulo, ...extra });
 
   /** Um aviso curto. A fila dele tem fim; ver `enfileirarAviso` no produto. */
-  const avisar = (mensagem, tom) => {
-    if (!temSuperficies) return Promise.resolve(null);
-    return ui.superficies.avisar(mensagem, tom);
-  };
+  const avisar = (mensagem, tom) => ui.superficies.avisar(mensagem, tom);
 
-  /** Registra uma contribuição e devolve o handle que a revoga. */
-  const contribuir = pedido => {
-    if (!temContribuicoes) throw new Error('Este SEELE não oferece contribuições de MOD.');
-    return ui.contribuicoes.registrar(pedido);
-  };
-  const revogar = handle => {
-    if (!temContribuicoes) return Promise.resolve(false);
-    return ui.contribuicoes.revogar(handle);
-  };
+  /** Registra uma contribuição e devolve `{ handle }`. */
+  const contribuir = pedido => ui.contribuicoes.registrar(pedido);
+  /** Troca o conteúdo de uma contribuição sem revogá-la. */
+  const atualizar = (handle, conteudo) => ui.contribuicoes.atualizar(handle, conteudo);
+  const revogar = handle => ui.contribuicoes.revogar(handle);
 
-  /**
-   * Uma entrada na navegação do servidor.
-   *
-   * **U03 pelo nome**: sem ela, o MOD não tem gesto de abertura, e desenhar ao
-   * conectar é a única forma de existir. Com ela, a atividade começa quando a
-   * pessoa a escolhe.
-   */
+  /** Uma entrada na navegação do servidor: o gesto que começa a atividade. */
   const entrada = (rotulo, acao = 'abrir', extra) => contribuir({
     ponto: 'servidor.navegacao',
     modo: 'adicionar',
@@ -217,51 +128,17 @@ function interfaceMod(id, titulo, intervalo = 4000) {
   });
 
   /**
-   * Diz alguma coisa a quem está olhando, **sem ocupar a sessão**.
-   *
-   * # Por que ela existe
-   *
-   * A validação nativa de 20/09/2026, N2: «a faixa inferior continua nos três
-   * MODs, tomando quase um terço da janela». A causa não era a faixa existir:
-   * era `iniciar` chamar `desenhar` — e portanto `ui.regiao` — a cada volta do
-   * relógio, ligado ou não. Com os três instalados, a sessão perdia 230 px de
-   * altura permanentemente, mesmo com nenhuma atividade aberta.
-   *
-   * # O que muda, e o que **não** muda
-   *
-   * Na API 4 a atividade mora numa superfície, que abre por um gesto. O que
-   * sobra para dizer entre uma abertura e outra é recado curto: «gravado»,
-   * «não foi possível atualizar». Isso é um aviso, e um aviso sai sozinho.
-   *
-   * Na API 3 não há aviso nem superfície, e a região continua sendo o único
-   * lugar onde este MOD existe. Ela continua exatamente como era — é o
-   * caminho de degradação, e não um caminho pior.
-   *
-   * **O que não muda é que a falha é dita.** Mandá-la para lugar nenhum seria
-   * trocar uma faixa que incomoda por um erro que ninguém vê.
+   * Diz alguma coisa a quem está olhando, **sem ocupar a sessão**: um aviso
+   * sai sozinho. A falha do próprio aviso não vira outra falha.
    */
-  const dizer = (mensagem, tom = 'normal') => {
-    if (temSuperficies) return avisar(mensagem, tom).then(() => {}, () => {});
-    return desenhar([texto(mensagem)]);
-  };
+  const dizer = (mensagem, tom = 'normal') => avisar(mensagem, tom).then(() => {}, () => {});
 
-  function iniciar(consultar, semCanal = async () => {}, aoEvento = null) {
-    /**
-     * Redesenha com o que o estado local diz **agora**.
-     *
-     * É o que um evento chama. Ele não vai ao servidor: quem digita espera a
-     * letra aparecer, e não esperar a rede.
-     *
-     * Na API 4 ele não pinta a região: quem desenha é a superfície aberta, e
-     * o MOD a atualiza pelo punho dela.
-     */
-    const repintar = partes => { if (!temSuperficies) void desenhar(partes); };
-
+  function iniciar(consultar, aoEvento = null) {
     if (aoEvento) {
       ui.aoEvento(evento => {
         // O erro do MOD fica com o MOD, e é dito em vez de sumir.
         try {
-          const talvez = aoEvento(evento, canalAtual, repintar);
+          const talvez = aoEvento(evento);
           if (talvez && typeof talvez.catch === 'function') {
             talvez.catch(erro => void dizer('Falhou: ' + (erro.message || String(erro)), 'erro'));
           }
@@ -271,9 +148,8 @@ function interfaceMod(id, titulo, intervalo = 4000) {
       });
     }
 
-    // Um recado repetido a cada quatro segundos é um recado que vira ruído: a
-    // fila de avisos tem fim, e enchê-la com a mesma frase tira dela os
-    // recados que importam. Só o que mudou é dito.
+    // Um recado repetido a cada volta é um recado que vira ruído: a fila de
+    // avisos tem fim. Só o que mudou é dito.
     let ultimoRecado = '';
     const recado = (mensagem, tom) => {
       if (mensagem === ultimoRecado) return Promise.resolve();
@@ -281,54 +157,36 @@ function interfaceMod(id, titulo, intervalo = 4000) {
       return dizer(mensagem, tom);
     };
 
-    async function atualizar() {
+    // **Com o aviso do servidor, não há laço.** A metade de servidor diz quando
+    // um dado mudou (`mundo.avisar`), e a janela não pergunta a cada volta. Sem
+    // a capacidade, o laço de sempre. E uma consulta que falha é tentada de
+    // novo depois do intervalo, com aviso ou sem: sem ela, o MOD ficaria sem
+    // dado nenhum até alguém gravar.
+    const temAvisoDoServidor = typeof ui.capacidades === 'function' && ui.capacidades().includes('aviso-do-servidor');
+
+    async function atualizarTudo() {
+      let falhou = false;
       try {
-        const snapshot = await api.snapshot(), canal = canalDe(snapshot);
-        canalAtual = canal;
-        if (canal === null) {
-          await semCanal();
-          await recado('Entre em um servidor com um canal de texto.');
-        } else {
-          const resultado = await consultar(snapshot, canal);
-          // **Não apresente uma resposta do canal anterior após a navegação.**
-          // A conferência vale nas duas versões; o que muda é onde a resposta
-          // aparece.
-          if (canalDe(await api.snapshot()) === canal) {
-            // **A região só na API 3.** Na 4, `consultar` continua rodando —
-            // ele é quem atualiza cartões, contribuições e o que estiver
-            // aberto —, e o que ele devolve para a faixa não é desenhado.
-            if (!temSuperficies) await desenhar(resultado);
-            ultimoRecado = '';
-          } else {
-            await recado('Canal alterado. Atualizando…');
-          }
-        }
+        await consultar(await lerRetrato());
+        ultimoRecado = '';
       } catch (erro) {
-        try { await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro'); }
-        catch (falha) { anotar('error', titulo + ': ' + (falha.message || String(falha))); }
+        falhou = true;
+        await recado('Não foi possível atualizar: ' + (erro.message || String(erro)), 'erro');
       } finally {
         // Agenda depois de concluir: nunca sobrepõe consultas nem repete
         // escritas. O SEELE encerra o executor e seus temporizadores ao sair.
-        setTimeout(atualizar, intervalo);
+        if (falhou || !temAvisoDoServidor) setTimeout(atualizarTudo, intervalo);
       }
     }
-    void atualizar();
+    void atualizarTudo();
   }
 
   return {
-    // API 3
-    texto, cabecalho, lista, campo, escolha, botao, linha, arquivo, midia,
-    request, iniciar, desenhar, dizer, agruparAtualizacoes, anotar,
-    // API 4 — composição
+    texto, campo, escolha, botao, arquivo, midia,
     caixa, pilha, grade, rolagem, separador, espaco,
-    // API 4 — controle
-    formulario, acoes, abas, aba, textoLongo, numero, deslizante,
-    marca, interruptor, cor,
-    // API 4 — apresentação
-    retrato, distintivo, link,
-    // API 4 — superfícies e integração
-    temSuperficies, temContribuicoes,
-    superficie, pagina, painel, dialogo, avisar,
-    contribuir, revogar, entrada,
+    formulario, acoes, textoLongo, cor, retrato,
+    request, iniciar, lerRetrato, dizer, anotar, agruparAtualizacoes,
+    superficie, pagina, dialogo, folha, avisar,
+    contribuir, atualizar, revogar, entrada,
   };
 }

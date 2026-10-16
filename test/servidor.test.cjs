@@ -25,95 +25,112 @@ test('Perfis: identidade autenticada, persistência entre canais e isolamento en
   assert.equal(s.call({op:'save',revision:0,profile},member).ok,false);
   assert.equal(s.call({op:'save',revision:1,profile},{...member,write:false}).ok,false);
 });
+// A recusa de um campo diz qual campo e por quê, na forma combinada entre os
+// MODs oficiais: `erros` mapeia a chave do controle do editor para um motivo
+// curto, e vai direto ao `formulario.erros` da API 6. `error` continua a frase
+// de hoje, que é o que o cliente da 3.x mostra.
+test('Perfis: a recusa de campo diz o campo e o motivo, e a frase de sempre continua',()=>{
+  const s=server('perfis');
+  const texto=s.call({op:'save',revision:0,profile:{...profile,displayName:'a'.repeat(41),bio:'b'.repeat(281)}},member);
+  assert.equal(texto.ok,false);
+  assert.equal(texto.error,'Texto maior que o permitido.');
+  assert.deepEqual(texto.erros,{displayName:'até 40 caracteres',bio:'até 280 caracteres'});
+  const cor=s.call({op:'save',revision:0,profile:{...profile,accent:'roxo',effect:'url(evil)',status:'s'.repeat(61),pronouns:7}},member);
+  assert.equal(cor.error,'Efeito ou cor inválidos.');
+  assert.deepEqual(cor.erros,{accent:'uma cor #rrggbb',effect:'um dos efeitos da lista',pronouns:'um texto',status:'até 60 caracteres'});
+  // Uma recusa que não é de campo não ganha `erros`.
+  const revisao=s.call({op:'save',revision:7,profile},member);
+  assert.equal(revisao.ok,false);
+  assert.equal('erros' in revisao,false);
+  assert.equal(s.call({op:'view'},member).profiles['2'].revision,0,'uma recusa gravou');
+});
 test('Perfis: rejeita opções inválidas sem modificar o perfil salvo',()=>{
   const s=server('perfis');
   for(const changed of [{displayName:'a'.repeat(41)},{bio:'a'.repeat(281)},{effect:'url(evil)'},{accent:'#fff;'}])assert.equal(s.call({op:'save',revision:0,profile:{...profile,...changed}}).ok,false);
   assert.equal(s.call({op:'view'}).profiles['1'].revision,0);
 });
 const gif='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-function upload(s,image=gif,ctx,slot='banner'){
-  const start=s.call({op:'upload-start',slot,length:image.length},ctx);assert.equal(start.ok,true);
-  let result;for(let n=0,i=0;n<image.length;n+=6000,i++){result=s.call({op:'upload-part',token:start.token,index:i,part:image.slice(n,n+6000)},ctx);if(!result.ok)break;}
-  return result;
+const { mundo } = require('./laboratorio.cjs');
+const doMembro={pessoa:'2',escrita:true};
+/** Uma imagem pelo volume, do jeito que o cliente da 6 a manda. */
+function subir(m,slot,bytes,ctx=doMembro){
+  const inicio=m.chamar({op:'upload-start',slot,transporte:'volume',bytes:bytes.length},ctx);
+  if(!inicio.ok)return inicio;
+  m.enviar(inicio.token,bytes,ctx.pessoa);
+  return m.chamar({op:'upload-finish',token:inicio.token},ctx);
 }
-test('Perfis: banner GIF mantém bytes, fica público e resiste a runtime novo',()=>{
-  const s=server('perfis');assert.equal(upload(s,gif,member).finished,true);
-  assert.equal(s.call({op:'asset',person:'2',slot:'banner'}).image,gif);
-  assert.equal(s.call({op:'asset',person:'1',slot:'banner'}).image,null);
-  assert.equal(s.call({op:'asset',person:'../../identity',slot:'banner'}).ok,false);
-  assert.equal(s.call({op:'clear-image',slot:'banner',revision:1},member).profile.banner,null);
+/** Uma imagem antiga em fragmentos, como a 3.1 gravava, semeada direto no disco. */
+function semearLegado(m,caminho,uri){
+  let n=0;for(let i=0;i<uri.length;i+=6000,n++)m.arquivos.set(caminho+'.'+n,uri.slice(i,i+6000));
+  m.arquivos.set(caminho,JSON.stringify({format:1,parts:n,length:uri.length}));
+}
+test('Perfis: banner GIF pelo volume fica público, e tirá-lo o tira',()=>{
+  const m=mundo(),bytes=Buffer.from(gif.slice(gif.indexOf(',')+1),'base64');
+  assert.equal(subir(m,'banner',bytes).ok,true);
+  const caminho=m.chamar({op:'view',people:['2']},doMembro).profiles['2'].banner;
+  assert.ok(caminho.startsWith('volume:'));
+  assert.deepEqual(m.chamar({op:'asset',person:'2',slot:'banner'},{pessoa:'3'}),{ok:true,volume:caminho.slice(7)});
+  assert.equal(m.chamar({op:'asset',person:'1',slot:'banner'}).image,null);
+  assert.equal(m.chamar({op:'asset',person:'../../identity',slot:'banner'}).ok,false);
+  assert.equal(m.chamar({op:'clear-image',slot:'banner',revision:1},doMembro).profile.banner,null);
 });
-test('Perfis: limites, ordem de fragmentos, token de outro usuário e expiração',()=>{
-  const s=server('perfis');assert.equal(s.call({op:'upload-start',slot:'banner',length:4*Math.ceil(10*1048576/3)+33}).ok,false);
-  const start=s.call({op:'upload-start',slot:'banner',length:gif.length});
-  const part={op:'upload-part',token:start.token,index:0,part:gif};
-  assert.equal(s.call({...part,index:1}).ok,false);
-  assert.equal(s.call(part,member).ok,false);
-  s.advance(601);assert.equal(s.call(part).ok,false);
+test('Perfis: 10 MiB pelo volume publicam, 10 MiB mais um byte nem começam, e o token é de quem pediu',()=>{
+  const m=mundo();
+  for(const slot of ['avatar','banner'])assert.equal(subir(m,slot,Buffer.alloc(10*1024*1024,7)).ok,true,slot);
+  const grande=m.chamar({op:'upload-start',slot:'banner',transporte:'volume',bytes:10*1024*1024+1},doMembro);
+  assert.equal(grande.ok,false);assert.match(grande.error,/10 MiB/);
+  const meu=m.chamar({op:'upload-start',slot:'avatar',transporte:'volume',bytes:8},doMembro);
+  m.enviar(meu.token,Buffer.alloc(8),'2');
+  assert.equal(m.chamar({op:'upload-finish',token:meu.token},{pessoa:'3'}).ok,false,'outra pessoa terminou o envio de quem pediu');
 });
-for(const slot of ['avatar','banner'])test('Perfis: '+slot+' de 10 MiB viaja sem arquivo ou resposta gigante',()=>{
-  const s=server();
-  const binary=Buffer.alloc(10*1024*1024);binary.write('GIF89a');
-  const image='data:image/gif;base64,'+binary.toString('base64');
-  assert.equal(upload(s,image,member,slot).finished,true);
-  assert.ok(Object.values(s.files).every(v=>v.length<=6000));
-  const first=s.call({op:'asset',person:'2',slot});
-  assert.equal(first.paged,true);assert.ok(first.image.length<=65536);
-  let received=first.image;
-  while(received.length<first.total){
-    const p=s.call({op:'asset',person:'2',slot,path:first.path,offset:received.length});
-    assert.equal(p.ok,true);assert.ok(p.image.length<=65536);received+=p.image;
+test('Perfis: o volume que não aceita a espera não publica',()=>{
+  const m=mundo({esperarRecusa:true});
+  const r=m.chamar({op:'upload-start',slot:'avatar',transporte:'volume',bytes:8},doMembro);
+  assert.equal(r.ok,false);assert.match(r.error,/iniciar o envio/);
+  assert.equal(m.chamar({op:'view',people:['2']},doMembro).profiles['2'].avatar,null);
+});
+test('Perfis: o volume só espera PNG, JPEG, WebP e GIF',()=>{
+  const m=mundo();
+  const r=m.chamar({op:'upload-start',slot:'avatar',transporte:'volume',bytes:8},doMembro);
+  assert.deepEqual([...m.esperas.get(r.token).tipos],['png','jpeg','webp','gif']);
+});
+test('Perfis: imagens antigas em fragmentos continuam legíveis, paginadas, e saem quando substituídas',()=>{
+  const m=mundo();
+  const binario=Buffer.alloc(200000);binario.write('GIF89a');
+  const uri='data:image/gif;base64,'+binario.toString('base64');
+  semearLegado(m,'uploads/2-antigo.parts',uri);
+  m.dados.profiles=JSON.stringify({'2':{revision:1,displayName:'',pronouns:'',bio:'',status:'',accent:'#f2521f',effect:'none',avatar:'uploads/2-antigo.parts',banner:null}});
+  const primeiro=m.chamar({op:'asset',person:'2',slot:'avatar'});
+  assert.equal(primeiro.paged,true);assert.ok(primeiro.image.length<=65536);
+  let lido=primeiro.image;
+  while(lido.length<primeiro.total){
+    const parte=m.chamar({op:'asset',person:'2',slot:'avatar',path:primeiro.path,offset:lido.length});
+    assert.equal(parte.ok,true);assert.ok(parte.image.length<=65536);lido+=parte.image;
   }
-  assert.equal(received,image);
-  assert.equal(s.call({op:'asset',person:'2',slot,path:'old',offset:0}).ok,false);
-  assert.equal(s.call({op:'asset',person:'2',slot,path:first.path,offset:-1}).ok,false);
-  assert.equal(s.call({op:'clear-image',slot,revision:1},member).ok,true);
-  for(let i=0;i<100;i++)s.call({op:'view'});
-  assert.equal(Object.keys(s.files).length,0,'limpeza incremental remove os fragmentos');
+  assert.equal(lido,uri);
+  assert.equal(m.chamar({op:'asset',person:'2',slot:'avatar',path:'outro',offset:0}).ok,false);
+  assert.equal(subir(m,'avatar',Buffer.alloc(8,1)).ok,true);
+  for(let i=0;i<20;i++)m.chamar({op:'view'},doMembro);
+  assert.equal([...m.arquivos.keys()].filter(k=>k.startsWith('uploads/2-antigo')).length,0,'os fragmentos substituídos ficaram no disco');
 });
-test('Perfis: imagens legadas continuam legíveis e são removidas após substituição',()=>{
-  const s=server();s.files['old.txt']=gif;
-  s.data.profiles=JSON.stringify({'1':{revision:1,avatar:'old.txt'}});
-  assert.equal(s.call({op:'asset',person:'1',slot:'avatar'}).image,gif);
-  assert.equal(upload(s,gif,undefined,'avatar').finished,true);
-  s.call({op:'view'});assert.equal(s.files['old.txt'],undefined);
-});
-test('Perfis: 10 MiB mais um byte não publica e nova tentativa limpa o upload abandonado',()=>{
-  const s=server();upload(s);
-  const original=s.call({op:'view'}).profiles['1'].banner;
-  const binary=Buffer.alloc(10*1024*1024+1);binary.write('GIF89a');
-  const image='data:image/gif;base64,'+binary.toString('base64');
-  assert.equal(upload(s,image).ok,false);
-  assert.equal(s.call({op:'view'}).profiles['1'].banner,original);
-  assert.equal(upload(s).finished,true);
-  for(let i=0;i<100;i++)s.call({op:'view'});
-  assert.equal(Object.keys(s.files).length,2,'só índice e fragmento da imagem publicada');
-});
-test('Perfis: padding no meio e upload incompleto não substituem imagem publicada',()=>{
-  const s=server();upload(s);
-  const original=s.call({op:'view'}).profiles['1'].banner;
-  const up=s.call({op:'upload-start',slot:'banner',length:7000});
-  assert.equal(s.call({op:'upload-part',token:up.token,index:0,part:gif+'A'.repeat(6000-gif.length-1)+'='}).ok,false);
-  assert.equal(s.call({op:'view'}).profiles['1'].banner,original);
-});
-test('Perfis: gravação falha não publica imagem e SVG não é aceito',()=>{
-  const s=server('perfis');s.setFailWrite(true);assert.equal(upload(s).ok,false);
-  assert.equal(s.call({op:'view'}).profiles['1'].banner,null);
-  s.setFailWrite(false);assert.equal(upload(s,'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=').ok,false);
-});
-test('Perfis: upload dividido preserva texto editado e valida revisão após imagem',()=>{
-  const s=server('perfis'),large=gif.slice(0,-4)+'AAAA'.repeat(4000)+'RAA7';
-  assert.equal(s.call({op:'save',revision:0,profile}).ok,true);
-  assert.equal(upload(s,large).finished,true);
-  assert.equal(s.call({op:'view'}).profiles['1'].displayName,profile.displayName);
-  assert.equal(s.call({op:'save',revision:1,profile}).ok,false);
-  assert.equal(s.call({op:'save',revision:2,profile}).ok,true);
+test('Perfis: uma imagem pelo volume preserva o texto e sobe a revisão',()=>{
+  const m=mundo();
+  assert.equal(m.chamar({op:'save',revision:0,profile},doMembro).ok,true);
+  assert.equal(subir(m,'banner',Buffer.alloc(8,2)).ok,true);
+  assert.equal(m.chamar({op:'view',people:['2']},doMembro).profiles['2'].displayName,profile.displayName);
+  assert.equal(m.chamar({op:'save',revision:1,profile},doMembro).ok,false);
+  assert.equal(m.chamar({op:'save',revision:2,profile},doMembro).ok,true);
 });
 test('Distribuição: manifestos e JavaScript válidos, pacote independente',()=>{
   for(const mod of ['perfis']){
     const dir=path.join(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'mod.json')));
     // A API que este pacote declara e o produto executa — ver `APIS_ACEITAS`.
-    assert.ok([3,4,5].includes(manifest.api),'API declarada: '+manifest.api);assert.equal(manifest.id,'seele/'+mod);
+    // A 4.0.0 é da API 6, e só dela: o app 0.16 não executa as 3, 4 e 5.
+    assert.equal(manifest.api,6,'API declarada: '+manifest.api);assert.equal(manifest.id,'seele/'+mod);
+    // **O alcance diz o que o MOD toca na 6.** A região saiu da API, e um
+    // alcance que a cite promete a quem instala um lugar que não existe.
+    assert.ok(Array.isArray(manifest.reach)&&manifest.reach.length>0&&manifest.reach.length<=16,'O alcance tem de 1 a 16 itens.');
+    assert.ok(!manifest.reach.includes('regiao'),'O alcance ainda cita a região, que saiu na API 6.');
     for(const reach of manifest.reach)assert.ok(Buffer.byteLength(reach,'utf8')<=32,'Cada alcance deve caber no limite do protocolo.');
     new vm.Script(fs.readFileSync(path.join(dir,manifest.client),'utf8'));
     new vm.Script(fs.readFileSync(path.join(dir,manifest.server),'utf8'));

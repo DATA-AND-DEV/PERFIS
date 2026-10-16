@@ -27,17 +27,18 @@
 use rquickjs::{Context, Function, Object, Runtime};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-/// O prelúdio, lido de onde ele mora: o executor em Rust.
+/// O prelúdio, lido de onde ele mora: o motor em Rust, desde 09/10/2026 um
+/// texto só para o desktop e o celular.
 ///
 /// Recortado do fonte e não copiado. Uma cópia é a segunda verdade que
 /// discorda no dia em que só uma sobe — e a que discordasse aqui faria este
 /// exercício provar um prelúdio que o produto não usa.
 fn preludio() -> Result<String, String> {
-    const FONTE: &str = include_str!("../../../../SEELE/apps/seele-app/src/executor.rs");
+    const FONTE: &str = include_str!("../../../../SEELE/crates/seele-motor/src/preludio.rs");
     const MARCA: &str = "const PRELUDIO: &str = r#\"";
     let inicio = FONTE
         .find(MARCA)
-        .ok_or("`PRELUDIO` não foi encontrado em executor.rs")?;
+        .ok_or("`PRELUDIO` não foi encontrado em preludio.rs")?;
     let resto = &FONTE[inicio + MARCA.len()..];
     let fim = resto.find("\"#;").ok_or("`PRELUDIO` não fecha")?;
     Ok(resto[..fim].to_owned())
@@ -58,9 +59,24 @@ fn servidor() -> Result<(), Box<dyn std::error::Error>> {
         runtime.set_memory_limit(8 * 1024 * 1024);
         let context = Context::full(&runtime)?;
         let result = context.with(|ctx| -> Result<String, String> {
+            // O mundo e o volume do Servidor 1.0. O volume guarda só o tamanho
+            // do que chegou: os bytes moram fora do motor, no disco de quem
+            // hospeda, e o `smoke.js` faz o papel do produto que os transmite.
             ctx.eval::<(), _>(r#"
                 globalThis.dados = {};
-                globalThis.mundo = { agora: () => 123 };
+                globalThis.__avisos = [];
+                globalThis.mundo = {
+                    agora: () => 123,
+                    avisar: aviso => (__avisos.push(JSON.stringify(aviso)), { ok: true }),
+                };
+                globalThis.__esperas = new Map();
+                globalThis.__volume = new Map();
+                globalThis.volume = {
+                    esperar: (token, nome) => (__esperas.set(token, nome), true),
+                    tamanho: nome => (__volume.has(nome) ? __volume.get(nome) : null),
+                    servir: nome => (__volume.has(nome) ? nome : null),
+                    apagar: nome => (__volume.delete(nome), true),
+                };
             "#).map_err(|e| format!("bindings: {e}: {:?}", ctx.catch()))?;
             // Storage is outside the JS heap, like SEELE's real file bindings.
             let disk = Rc::new(RefCell::new(HashMap::<String,String>::new()));
@@ -115,17 +131,30 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map_err(|e| format!("postar: {e}"))?;
 
+        // O registro de quem hospeda: o que o MOD disse como aviso ou erro
+        // aparece na saída, para quem lê saber por que ele parou.
+        let registro = Function::new(ctx.clone(), move |nivel: String, texto: String| {
+            if nivel == "warn" || nivel == "error" {
+                eprintln!("[MOD {nivel}] {texto}");
+            }
+        })
+        .map_err(|e| format!("console: {e}"))?;
+
         let seele = rquickjs::Object::new(ctx.clone()).map_err(|e| format!("seele: {e}"))?;
         seele
             .set("postar", postar)
             .map_err(|e| format!("seele.postar: {e}"))?;
+        seele
+            .set("console", registro)
+            .map_err(|e| format!("seele.console: {e}"))?;
         ctx.globals()
             .set("seele", seele)
             .map_err(|e| format!("global seele: {e}"))?;
 
-        // As capacidades da API que este pacote declara. O prelúdio as lê e as
-        // apaga; um pacote de API 3 receberia uma lista menor, e `SeeleUI`
-        // nasceria sem `superficies`.
+        // As capacidades da API que este pacote declara, **do contrato do
+        // SEELE** (`api/v6.json`), e não de uma lista escrita aqui: a lista
+        // escrita foi a que ficou na 5 quando o produto passou à 6. O prelúdio
+        // as lê e as apaga.
         let manifesto: serde_json::Value =
             serde_json::from_str(include_str!("../../../mod.json"))
                 .map_err(|e| format!("mod.json: {e}"))?;
@@ -133,13 +162,13 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
             .get("api")
             .and_then(serde_json::Value::as_u64)
             .ok_or("o manifesto não declara `api`")?;
-        let capacidades = if api >= 5 {
-            r#"["regiao","tema","cartoes","arquivo","superficies","contribuicoes","estilos","classes","volume"]"#
-        } else if api >= 4 {
-            r#"["regiao","tema","cartoes","arquivo","superficies","contribuicoes","estilos","classes"]"#
-        } else {
-            r#"["regiao","tema","cartoes","arquivo"]"#
-        };
+        let contrato: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../SEELE/api/v6.json"))
+                .map_err(|e| format!("api/v6.json: {e}"))?;
+        let capacidades = contrato
+            .pointer(&format!("/compatibilidade/capacidades-por-versao/{api}"))
+            .filter(|lista| lista.is_array())
+            .ok_or(format!("o api/v6.json deste SEELE não dá capacidades à API {api}"))?;
         ctx.eval::<(), _>(format!("globalThis.__seeleCapacidades = {capacidades};"))
             .map_err(|e| format!("capacidades: {e}: {:?}", ctx.catch()))?;
 
@@ -166,34 +195,69 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
         ctx.eval::<(), _>(include_str!("../../../cliente/main.js"))
             .map_err(|e| format!("cliente: {e}: {:?}", ctx.catch()))?;
 
-        // O MOD pergunta o retrato assim que sobe. Respondê-lo é o que o faz
-        // seguir — e seguir é o que exercita o desenho.
+        // **A conversa, até o MOD parar de falar.** O primeiro pedido tem de
+        // ser o retrato da 6 — o `snapshot` não existe nela —, e cada fala
+        // recebe a resposta que o anfitrião daria: o retrato pela lista
+        // branca, a consulta do servidor, e o handle de cada contribuição.
+        // Responder só à primeira provava que o MOD subia; responder a todas
+        // prova que ele chega a apresentar alguém.
         let primeiro = lido.borrow().first().cloned().unwrap_or_default();
         let pedido: serde_json::Value =
             serde_json::from_str(&primeiro).map_err(|e| format!("primeira fala: {e}"))?;
-        let numero = pedido
-            .get("n")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("a primeira fala do MOD não tem número")?;
-        if pedido.get("tipo").and_then(serde_json::Value::as_str) != Some("snapshot") {
-            return Err(format!("o MOD começou por {primeiro}, e não por um retrato"));
+        if pedido.get("tipo").and_then(serde_json::Value::as_str) != Some("retrato") {
+            return Err(format!("o MOD começou por {primeiro}, e não pelo retrato"));
         }
-
-        let retrato = format!(
-            r#"{{"tipo":"resposta","n":{numero},"ok":true,"valor":{{
-                "me":1,"open_channel":1,"channels":[{{"id":1,"name":"geral"}}],
-                "presentes":[{{"id":1,"nickname":"Alex"}},{{"id":2,"nickname":"Lia"}}]
-            }}}}"#
-        );
-        ctx.globals()
-            .set("__resposta", retrato)
-            .map_err(|e| format!("resposta: {e}"))?;
-        ctx.eval::<(), _>("aoResponder(__resposta)")
-            .map_err(|e| format!("aoResponder: {e}: {:?}", ctx.catch()))?;
-
-        // As microtarefas que a resposta soltou. No executor quem as escoa é o
-        // laço dele; aqui é esta linha.
-        while ctx.execute_pending_job() {}
+        let mut respondidas = 0;
+        let mut handles = 0;
+        for _volta in 0..256 {
+            let novas: Vec<String> = lido.borrow()[respondidas..].to_vec();
+            if novas.is_empty() {
+                break;
+            }
+            respondidas += novas.len();
+            for texto in novas {
+                let fala: serde_json::Value =
+                    serde_json::from_str(&texto).map_err(|e| format!("fala: {e}"))?;
+                let Some(numero) = fala.get("n").and_then(serde_json::Value::as_u64) else {
+                    continue;
+                };
+                let valor = match fala.get("tipo").and_then(serde_json::Value::as_str) {
+                    Some("retrato") => serde_json::json!({
+                        "eu": 1, "servidor": { "nome": "laboratório" },
+                        "pessoas": [
+                            { "id": 1, "apelido": "Alex", "falando": false, "mudo": false },
+                            { "id": 2, "apelido": "Lia", "falando": false, "mudo": false },
+                        ],
+                        "salas": [], "canais": [{ "id": 1, "nome": "geral", "aberto": true }],
+                        "onde": "computador", "regioes": ["servidor.navegacao", "pessoas.lista", "pagina", "dialogo", "folha", "aviso"],
+                    }),
+                    Some("pedido") => serde_json::json!({
+                        "ok": true, "me": "1",
+                        "profiles": {
+                            "1": { "revision": 1, "displayName": "Alex", "pronouns": "", "bio": "", "status": "aqui",
+                                   "accent": "#f2521f", "effect": "aurora", "avatar": null, "banner": null },
+                            "2": { "revision": 1, "displayName": "Lia", "pronouns": "ela/dela", "bio": "", "status": "",
+                                   "accent": "#a78bfa", "effect": "none", "avatar": null, "banner": null },
+                        },
+                    }),
+                    Some("contribuir") => {
+                        handles += 1;
+                        serde_json::json!({ "handle": format!("c{handles}"), "recusados": 0 })
+                    }
+                    Some("atualizar-contribuicao") | Some("revogar-contribuicao") => serde_json::json!(true),
+                    _ => serde_json::Value::Null,
+                };
+                let resposta = serde_json::json!({ "tipo": "resposta", "n": numero, "ok": true, "valor": valor });
+                ctx.globals()
+                    .set("__resposta", resposta.to_string())
+                    .map_err(|e| format!("resposta: {e}"))?;
+                ctx.eval::<(), _>("aoResponder(__resposta)")
+                    .map_err(|e| format!("aoResponder: {e}: {:?}", ctx.catch()))?;
+                // As microtarefas que a resposta soltou. No executor quem as
+                // escoa é o laço dele; aqui é esta linha.
+                while ctx.execute_pending_job() {}
+            }
+        }
 
         Ok(String::new())
     });
@@ -219,9 +283,28 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
+    if tipos.iter().any(|t| t == "snapshot" || t == "regiao" || t == "cartoes") {
+        return Err(format!("o MOD pediu o que a API 6 não tem: {tipos:?}").into());
+    }
+    // O cartão de cada pessoa e a entrada, cada um pelo ponto dele.
+    let pontos: Vec<String> = falas
+        .iter()
+        .filter_map(|texto| {
+            let fala: serde_json::Value = serde_json::from_str(texto).ok()?;
+            if fala.get("tipo")?.as_str()? != "contribuir" {
+                return None;
+            }
+            fala.pointer("/pedido/ponto")?.as_str().map(str::to_owned)
+        })
+        .collect();
+    for ponto in ["pessoa.cartao", "servidor.navegacao"] {
+        if !pontos.iter().any(|p| p == ponto) {
+            return Err(format!("o MOD não contribuiu para «{ponto}»: {pontos:?}").into());
+        }
+    }
     println!(
         "QuickJS 0.12.2 / 8 MiB: o cliente sobe no prelúdio real, sem DOM e sem \
-         Node, e fala {} vez(es) — {tipos:?}.",
+         Node, e fala {} vez(es); contribui para {pontos:?}.",
         falas.len()
     );
     Ok(())
