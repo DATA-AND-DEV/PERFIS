@@ -21,7 +21,7 @@
 // eles faltam do `SeeleUI` como qualquer coisa que a API não tem.
 function interfaceMod(id, titulo, intervalo = 4000) {
   const api = globalThis.SeeleMods, ui = globalThis.SeeleUI;
-  if (!api || !ui) throw new Error('Este MOD exige a API 6 do SEELE.');
+  if (!api || !ui) throw new Error('Este MOD exige a API 7 do SEELE.');
 
   // ---- as formas ----
   const texto = dentro => ({ forma: 'texto', dentro: String(dentro ?? '') });

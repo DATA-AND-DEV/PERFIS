@@ -1,6 +1,20 @@
-# SEELE MOD PERFIS — 4.0.0
+# SEELE MOD PERFIS — 5.0.0
 
-Requer **API de MOD 6** do SEELE, no cliente e no servidor. Roda no Servidor 1.0,
+Requer **API de MOD 7** do SEELE, no cliente e no servidor. Roda no Servidor 2.0,
+ou seja, no app 0.17 em diante (contrato em `api/v7.json`).
+
+> **Esta variante é da API 7, e não é a API 6 migrada.** A 0.16 a recusa (`ApiTooNew`): a 4.0.0, na API 6, segue sendo a do app 0.16.
+> **O PERFIS não ganhou ação.** Cada operação dele já é protegida por uma regra que a ação não melhoraria: **a pessoa edita o
+> próprio perfil** (`ctx.person` é a identidade; um `person` de outra pessoa no corpo é recusado, e `ctx.write` é a permissão de
+> escrever no canal) e **ler** é livre. Não existe operação de moderação sobre o perfil de outra pessoa; criar uma só para ter uma
+> ação seria inventar uma permissão sem significado. Por isso o `mod.json` **não declara `permissoes`**, o cliente **não usa**
+> `SeeleMods.acao`, e a 5.0.0 muda só a API declarada (a linha do Servidor 2.0, D-mods-1) e o texto. Atualizar da 4.0.0 mantém os
+> perfis e as imagens (o quintal é o mesmo).
+>
+> **O que continua por `request`, e por qual regra:** `view` e `asset` (leitura); `save`, `clear-image`, `reset`, `upload-start` e
+> `upload-finish` (só `self`: `ctx.person`, com `ctx.write` do canal e a revisão do próprio perfil).
+
+Antes, na 4.0.0: roda no Servidor 1.0,
 ou seja, no app 0.16 em diante. A linha 3 (a 3.3.1, na API 5) continua sendo a
 que os apps do Servidor 0.15 — de v0.14.2 a 0.15.x — recebem do catálogo. O
 cliente roda no executor do MOD, fora da janela, e declara o que quer mostrar;

@@ -34,7 +34,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 /// discorda no dia em que só uma sobe — e a que discordasse aqui faria este
 /// exercício provar um prelúdio que o produto não usa.
 fn preludio() -> Result<String, String> {
-    const FONTE: &str = include_str!("../../../../SEELE/crates/seele-motor/src/preludio.rs");
+    const FONTE: &str = include_str!(concat!(env!("SEELE_RAIZ"), "/crates/seele-motor/src/preludio.rs"));
     const MARCA: &str = "const PRELUDIO: &str = r#\"";
     let inicio = FONTE
         .find(MARCA)
@@ -152,7 +152,7 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("global seele: {e}"))?;
 
         // As capacidades da API que este pacote declara, **do contrato do
-        // SEELE** (`api/v6.json`), e não de uma lista escrita aqui: a lista
+        // SEELE** (`api/v7.json`, que traz a 6 inteira), e não de uma lista escrita aqui: a lista
         // escrita foi a que ficou na 5 quando o produto passou à 6. O prelúdio
         // as lê e as apaga.
         let manifesto: serde_json::Value =
@@ -163,12 +163,12 @@ fn cliente() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(serde_json::Value::as_u64)
             .ok_or("o manifesto não declara `api`")?;
         let contrato: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../SEELE/api/v6.json"))
-                .map_err(|e| format!("api/v6.json: {e}"))?;
+            serde_json::from_str(include_str!(concat!(env!("SEELE_RAIZ"), "/api/v7.json")))
+                .map_err(|e| format!("api/v7.json: {e}"))?;
         let capacidades = contrato
             .pointer(&format!("/compatibilidade/capacidades-por-versao/{api}"))
             .filter(|lista| lista.is_array())
-            .ok_or(format!("o api/v6.json deste SEELE não dá capacidades à API {api}"))?;
+            .ok_or(format!("o api/v7.json deste SEELE não dá capacidades à API {api}"))?;
         ctx.eval::<(), _>(format!("globalThis.__seeleCapacidades = {capacidades};"))
             .map_err(|e| format!("capacidades: {e}: {:?}", ctx.catch()))?;
 

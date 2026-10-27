@@ -1,6 +1,6 @@
 {
   "name": "seele-mod-perfis",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "private": true,
   "scripts": {
     "build": "node ferramentas/build.mjs",

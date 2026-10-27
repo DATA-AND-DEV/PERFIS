@@ -125,8 +125,9 @@ test('Distribuição: manifestos e JavaScript válidos, pacote independente',()=
   for(const mod of ['perfis']){
     const dir=path.join(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'mod.json')));
     // A API que este pacote declara e o produto executa — ver `APIS_ACEITAS`.
-    // A 4.0.0 é da API 6, e só dela: o app 0.16 não executa as 3, 4 e 5.
-    assert.equal(manifest.api,6,'API declarada: '+manifest.api);assert.equal(manifest.id,'seele/'+mod);
+    // A 5.0.0 é da API 7 (a linha do Servidor 2.0); a 4.0.0 é da API 6, do app 0.16.
+    assert.equal(manifest.api,7,'API declarada: '+manifest.api);
+    assert.equal(manifest.permissoes,undefined,'o PERFIS não declara ação: as permissões só existem a partir da API 7 e ele não tem operação protegida por cargo');assert.equal(manifest.id,'seele/'+mod);
     // **O alcance diz o que o MOD toca na 6.** A região saiu da API, e um
     // alcance que a cite promete a quem instala um lugar que não existe.
     assert.ok(Array.isArray(manifest.reach)&&manifest.reach.length>0&&manifest.reach.length<=16,'O alcance tem de 1 a 16 itens.');
@@ -147,3 +148,41 @@ test('Distribuição: o README abre com a versão e a API do manifesto',()=>{
   assert.ok(resto.slice(0,4).join('\n').includes('API de MOD '+manifest.api),'o README não abre com a API do manifesto');
 });
 module.exports={server};
+
+// ---- API 7: o PERFIS não tem ação, e a regra de `self` continua a mesma ----
+test('Perfis (API 7): self continua valendo — a pessoa edita o próprio perfil, e um corpo falsificado não edita o de outra',()=>{
+  const s=server('perfis'),contexto={...member,acao:null,permissoes:[]};
+  assert.equal(s.call({op:'save',revision:0,profile},contexto).ok,true);
+  // O corpo diz ser outra pessoa, ser admin, ter permissão e trazer contexto: nada disso decide.
+  const forjado={op:'save',revision:1,profile:{...profile,displayName:'Invasor'},person:'1',admin:true,acao:'editar-perfil',permissoes:['editar-perfil'],contexto:{person:'1',admin:true,acao:'editar-perfil'}};
+  assert.equal(s.call(forjado,contexto).ok,false,'o corpo falsificado editou o perfil de outra pessoa');
+  assert.equal(s.call({op:'view',people:['1']},contexto).profiles['1'],undefined,'o perfil da pessoa 1 passou a existir');
+  assert.equal(s.call({op:'view',people:['2']},contexto).profiles['2'].displayName,profile.displayName);
+  // `write` do canal segue sendo a permissão de escrever; sem ela, só lê.
+  assert.equal(s.call({op:'save',revision:1,profile},{...contexto,write:false}).ok,false);
+});
+test('Perfis (API 7): nenhuma ação declarada — o servidor não tem o que conferir, e a ação inventada não chega',()=>{
+  const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../mod.json'),'utf8'));
+  assert.equal(manifest.api,7);assert.equal(manifest.version,'5.0.0');assert.equal('permissoes' in manifest,false);
+  const fonte=fs.readFileSync(path.join(__dirname,'../cliente/main.js'),'utf8');
+  assert.ok(!/SeeleMods\.acao|api\.acao/.test(fonte),'o cliente usa SeeleMods.acao sem ação declarada');
+  const servidor=fs.readFileSync(path.join(__dirname,'../servidor/main.js'),'utf8');
+  assert.ok(!/contexto\.acao|ctx\.acao|ctx\.permissoes/.test(servidor),'o servidor guarda por uma ação que o manifesto não declara');
+});
+test('Perfis: atualizar da 4.0.0 (API 6) para a 5.0.0 mantém perfis, revisões e imagens, e a 5.0.0 segue a partir deles',()=>{
+  const velha=path.join(__dirname,'../../../mods-oficiais-017/perfis');
+  const m4=JSON.parse(fs.readFileSync(path.join(velha,'mod.json'),'utf8'));
+  assert.equal(m4.api,6);assert.equal(m4.version,'4.0.0');
+  const fonte4=fs.readFileSync(path.join(velha,'servidor/main.js'),'utf8'),fonte5=fs.readFileSync(path.join(__dirname,'../servidor/main.js'),'utf8');
+  const data={},files={};
+  const rodar=(fonte,req,ctx)=>{const c=vm.createContext({dados:data,arquivos:{ler:p=>files[p]??null,escrever:(p,v)=>{files[p]=v;return true;},apagar:p=>{delete files[p];return true;}},mundo:{agora:()=>1789694000},Math});vm.runInContext(fonte,c,{timeout:250});return JSON.parse(c.aoPedir(JSON.stringify(ctx),JSON.stringify(req)));};
+  assert.equal(rodar(fonte4,{op:'save',revision:0,profile},member).ok,true);
+  const antes=JSON.stringify(data);
+  // A 5.0.0 lê o MESMO quintal e continua a revisão.
+  const visto=rodar(fonte5,{op:'view',people:['2']},member);
+  assert.equal(visto.profiles['2'].displayName,profile.displayName);assert.equal(visto.profiles['2'].revision,1);
+  assert.equal(JSON.stringify(data),antes,'ler na 5.0.0 mexeu no quintal da 4.0.0');
+  assert.equal(rodar(fonte5,{op:'save',revision:1,profile:{...profile,status:'Depois da atualização'}},member).ok,true);
+  assert.equal(rodar(fonte5,{op:'view',people:['2']},member).profiles['2'].status,'Depois da atualização');
+  assert.equal(rodar(fonte5,{op:'save',revision:1,profile},member).ok,false,'a revisão antiga não bloqueou');
+});
